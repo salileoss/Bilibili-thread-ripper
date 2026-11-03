@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [2026.11.2.1] - 2026-11-02
+
+### BTR West Coast fork
+
+- Independent Tampermonkey identity and stable/Canary updates from `salileoss/Bilibili-thread-ripper`.
+- New installations default to Auto CDN selection across original, overseas and mainland routes; explicit manual/custom selections remain available.
+- Latency-aware route ranking, bounded exploration, and short-lived host priors shared across tracks/videos.
+- Useful-delivery and playback interruption diagnostics, stricter concurrency trial gains and conservative downward trials.
+- Playback-rate-aware safety buffers and upcoming-segment demand estimates; same-quality codec capability checks respect explicit preferences.
+- Optional low-buffer progressive appending, disabled by default, plus validated route probes and serial browser benchmarks.
+
 ### 修复
 
 - 全接管下，断网后交回 B 站、B 站也恢复失败时，自动重新接管会从头播放（@KeWu5678，#62）。现在保留断网前的位置；B 站已经恢复播放时，使用它当前的进度。

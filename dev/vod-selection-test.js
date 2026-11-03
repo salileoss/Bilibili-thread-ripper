@@ -4,7 +4,7 @@
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const SOURCE=path.join(__dirname,"../src");
 function load(unsupportedCodecs=[]){
-  const context=vm.createContext({URL,console,document:undefined,performance});
+  const context=vm.createContext({URL,console,document:undefined,performance,setTimeout,clearTimeout});
   context.globalThis=context;
   context.MediaSource={isTypeSupported:(mime)=>!unsupportedCodecs.some(codec=>mime.includes(codec))};
   context.__BILI_RANGE_CORE__={parseByteRange:()=>null,normalizeSettings:(x)=>x};
@@ -56,4 +56,15 @@ test("playback deadlines are absolute and account for playback speed",()=>{
   const factory=load([]);
   assert.equal(factory.playbackDeadlineAt(10,4,2,1000),4000,"six media seconds at 2x are three wall-clock seconds");
   assert.equal(factory.playbackDeadlineAt(4,10,2,1000),1000,"an overdue segment keeps the entry timestamp");
+});
+
+test("default codec avoids a decoder reported as unsmooth without changing quality",async()=>{
+  const factory=load([]);
+  const av1=video(80,"av01.0.08M.08",1080,1.5e6),avc=video(80,"avc1.640028",1080,3e6);
+  const info={data:{dash:{video:[av1,avc]}}};
+  const decode=async config=>({supported:true,smooth:config.video.contentType.includes("avc1"),powerEfficient:true});
+  assert.equal(await factory.smoothRepresentation(info,av1,"",decode),avc);
+  assert.equal(await factory.smoothRepresentation(info,av1,"av1",decode),av1,"explicit codec stays selected");
+  assert.equal(await factory.smoothRepresentation(info,av1,"",async()=>{throw new Error("unavailable");}),av1);
+  assert.equal(await factory.smoothRepresentation(info,av1,"",()=>new Promise(()=>{})),av1,"a hung capability query has a bounded wait");
 });

@@ -1,15 +1,15 @@
 // ==UserScript==
-// @name         Bilibili 线程撕裂者
-// @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.30.1
+// @name         BTR West Coast
+// @namespace    https://github.com/salileoss/Bilibili-thread-ripper
+// @version      2026.11.2.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
-// @author       MrTangLuyao
+// @author       MrTangLuyao; West Coast fork by salileoss
 // @license      MIT
-// @homepageURL  https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @supportURL   https://github.com/MrTangLuyao/Bilibili-thread-ripper/issues
-// @updateURL    https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js
-// @downloadURL  https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js
+// @homepageURL  https://github.com/salileoss/Bilibili-thread-ripper
+// @supportURL   https://github.com/salileoss/Bilibili-thread-ripper/issues
+// @updateURL    https://raw.githubusercontent.com/salileoss/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js
+// @downloadURL  https://raw.githubusercontent.com/salileoss/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js
 // @match        https://*.bilibili.com/*
 // @run-at       document-start
 // @grant        GM_registerMenuCommand
@@ -314,7 +314,7 @@ const chrome = (() => {
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
-      mode: ["overseas", "custom"].includes(source.mode) ? source.mode : "mainland",
+      mode: ["auto", "overseas", "custom"].includes(source.mode) ? source.mode : "mainland",
       customHosts: (Array.isArray(source.customHosts) ? source.customHosts : [])
         .map(normalizeCdnHost)
         .filter((host, index, all) => host && all.indexOf(host) === index)
@@ -325,6 +325,8 @@ const chrome = (() => {
       // right); null when it was never moved.
       floatingButtonLeft: source.floatingButtonLeft != null && Number(source.floatingButtonLeft) >= 0 && Number(source.floatingButtonLeft) <= 1 ? Number(source.floatingButtonLeft) : null,
       floatingButtonTop: source.floatingButtonTop != null && Number(source.floatingButtonTop) >= 0 && Number(source.floatingButtonTop) <= 1 ? Number(source.floatingButtonTop) : null,
+      // The first-run guide to the floating button was answered (settings-panel.js).
+      guideDone: source.guideDone === true,
       debugNotices: source.debugNotices === true,
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
@@ -342,7 +344,8 @@ const chrome = (() => {
       bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
       // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
       // Experimental, off unless switched on.
-      secondaryBuffer: source.secondaryBuffer === true
+      secondaryBuffer: source.secondaryBuffer === true,
+      progressiveMedia: source.progressiveMedia === true
     };
   }
 
@@ -543,7 +546,7 @@ const chrome = (() => {
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index);
     const custom = customServers(mode, customHosts);
-    const hosts = custom.length ? custom : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
+    const hosts = custom.length ? custom : mode === "auto" ? [...OVERSEAS_HOSTS.slice(0, 2), ...MAINLAND_HOSTS, ...OVERSEAS_HOSTS.slice(2)] : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
     // A relay address moved to an ordinary node is refused there, so only ordinary addresses
     // are moved to the other nodes.
     const ordinary = originals.filter((url) => !isRelayUrl(url));
@@ -562,6 +565,7 @@ const chrome = (() => {
       .filter(Boolean);
     const allowedOriginals = custom.length
       ? originals.filter((url) => custom.includes(hostOf(url)))
+      : mode === "auto" ? ordinary
       : mode === "overseas"
         ? originals.filter((url) => !MAINLAND_HOSTS.includes(hostOf(url)))
         : originals.filter((url) => MAINLAND_HOSTS.includes(hostOf(url)));
@@ -661,6 +665,10 @@ const chrome = (() => {
   // that was left out for being slow goes back to the untested ones after this, and gets
   // another try through the exploration slot.
   const MEASUREMENT_TTL_MS = 90000;
+  // Host priors contain no addresses or signatures and are only hints in Auto mode.
+  // A different file still has to prove it can be served; failures remain file-local.
+  const hostPriors = new Map();
+  root.addEventListener?.("online", () => hostPriors.clear());
 
   function createResolver(representation, getMode, bans = null, getCustomHosts = null) {
     const health = new Map();
@@ -681,7 +689,15 @@ const chrome = (() => {
       }
       return key;
     };
-    const measurement = (url) => routes.get(routeOf(url)) || null;
+    const measurement = (url) => {
+      const local = routes.get(routeOf(url));
+      if (getMode?.() !== "auto") return local || null;
+      const prior = hostPriors.get(hostOf(url));
+      const fresh = prior && Date.now() - prior.at < MEASUREMENT_TTL_MS;
+      return { ...(fresh ? prior : {}), ...local,
+        bps: local?.bps || (fresh ? prior.bps * 0.7 : 0),
+        lastMeasuredAt: local?.lastMeasuredAt || (fresh ? prior.lastMeasuredAt : 0) };
+    };
     // Only a transfer long enough to measure a speed renews it. The short tail of a resumed
     // piece proves the node works, and must not keep an old speed alive for ever.
     const measuredNow = (url, now = Date.now()) => {
@@ -693,6 +709,15 @@ const chrome = (() => {
       const bm = measurement(b) || {};
       return Number(Boolean(bm.lastSuccessAt)) - Number(Boolean(am.lastSuccessAt)) || (bm.bps || 0) - (am.bps || 0);
     };
+    const completionMs = (url, bytes) => {
+      const item = measurement(url) || {};
+      const latency = item.firstByteMs || 500;
+      const rate = measuredNow(url) ? (item.bodyBps || item.bps) : 0;
+      return latency + (rate > 0 ? bytes * 1000 / rate : 2000)
+        + (item.jitterMs || 0) + (health.get(url)?.failures || 0) * 500;
+    };
+    const rank = (bytes) => getMode?.() === "auto"
+      ? (a, b) => completionMs(a, bytes) - completionMs(b, bytes) : bySpeed;
     let cursor = 0;
     let mediaRangeCount = 0;
     let rangeCursor = 0;
@@ -725,16 +750,17 @@ const chrome = (() => {
       return rotated;
     }
 
-    function rangeCandidates() {
+    function rangeCandidates(bytes = 512 * 1024) {
       const now = Date.now();
       const pool = urls()
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now)
-        .sort(bySpeed);
+        .sort(rank(bytes));
       if (!pool.length) return urls();
       const firstRange = mediaRangeCount === 0;
-      const width = Math.min(firstRange ? pool.length : 6, pool.length);
+      const automatic = getMode?.() === "auto";
+      const width = Math.min(automatic ? 4 : firstRange ? pool.length : 6, pool.length);
       let selected;
-      const warmupRanges = getMode?.() === "mainland" ? 1 : 4;
+      const warmupRanges = automatic || getMode?.() === "mainland" ? 1 : 4;
       if (mediaRangeCount < warmupRanges) {
         selected = pool.slice(0, width);
         rangeCursor = width % pool.length;
@@ -748,11 +774,11 @@ const chrome = (() => {
         // finding the good nodes quickly costs little.
         const measured = pool.filter((url) => measuredNow(url, now));
         const rest = pool.filter((url) => !measuredNow(url, now));
-        const places = Math.min(rest.length, Math.max(1, width - measured.length));
+        const places = Math.min(rest.length, automatic ? 1 : Math.max(1, width - measured.length));
         const explore = Array.from({ length: places }, (_item, index) => rest[(rangeCursor + index) % rest.length]);
         rangeCursor = (rangeCursor + places) % Math.max(1, pool.length);
         selected = [...measured.slice(0, width - explore.length), ...explore];
-        for (const url of pool) {
+        for (const url of automatic ? [] : pool) {
           if (selected.length >= Math.min(3, pool.length)) break;
           if (!selected.includes(url)) selected.push(url);
         }
@@ -773,29 +799,39 @@ const chrome = (() => {
       const candidates = unbanned([...originals, ...allUrls()]
         .filter((url, index, all) => all.indexOf(url) === index))
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now);
-      return candidates.slice(0, 8);
+      return (getMode?.() === "auto" ? candidates.sort(rank(8192)) : candidates).slice(0, 8);
     }
 
     function rescueCandidates() {
       const now = Date.now();
       return urls()
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now)
-        .sort(bySpeed);
+        .sort(rank(128 * 1024));
     }
 
-    function success(url, bps) {
+    function success(url, bps, timing = {}) {
       bans?.success?.(url);
       const old = measurement(url) || {};
       const now = Date.now();
       const measured = bps > 0;
       health.set(url, { failures: 0, blockedUntil: 0, lastSuccessAt: now });
       routes.set(routeOf(url), {
+        ...old,
         lastSuccessAt: now,
         // No speed comes with a transfer too short to measure one; the last one stays, and
         // keeps its age.
         lastMeasuredAt: measured ? now : old.lastMeasuredAt || 0,
-        bps: !measured ? old.bps || 0 : old.bps ? old.bps * 0.65 + bps * 0.35 : bps
+        bps: !measured ? old.bps || 0 : old.bps ? old.bps * 0.65 + bps * 0.35 : bps,
+        firstByteMs: timing.firstByteMs > 0 ? old.firstByteMs ? old.firstByteMs * 0.65 + timing.firstByteMs * 0.35 : timing.firstByteMs : old.firstByteMs || 0,
+        jitterMs: timing.firstByteMs > 0 && old.firstByteMs ? (old.jitterMs || 0) * 0.65 + Math.abs(timing.firstByteMs - old.firstByteMs) * 0.35 : old.jitterMs || 0,
+        bodyBps: timing.bodyBps > 0 ? old.bodyBps ? old.bodyBps * 0.65 + timing.bodyBps * 0.35 : timing.bodyBps : old.bodyBps || 0
       });
+      if (getMode?.() === "auto") {
+        if (hostPriors.size >= 64) hostPriors.delete(hostPriors.keys().next().value);
+        const item = routes.get(routeOf(url));
+        hostPriors.set(hostOf(url), { at: now, bps: item.bps, firstByteMs: item.firstByteMs,
+          bodyBps: item.bodyBps, jitterMs: item.jitterMs, lastMeasuredAt: item.lastMeasuredAt });
+      }
     }
 
     // The speed of a transfer that was cut off before its end. It says how fast the node is
@@ -804,6 +840,7 @@ const chrome = (() => {
       if (!(bps > 0)) return;
       const old = measurement(url) || {};
       routes.set(routeOf(url), {
+        ...old,
         lastSuccessAt: old.lastSuccessAt || 0,
         lastMeasuredAt: Date.now(),
         bps: old.bps ? old.bps * 0.65 + bps * 0.35 : bps
@@ -833,7 +870,9 @@ const chrome = (() => {
         return {
           host: new URL(url).hostname,
           state: nodeBanned ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : measurement(url)?.lastSuccessAt ? "healthy" : "untested",
-          bps: measurement(url)?.bps || 0
+          bps: speed(url),
+          firstByteMs: Math.round(measurement(url)?.firstByteMs || 0),
+          jitterMs: Math.round(measurement(url)?.jitterMs || 0)
         };
       });
     }
@@ -1014,6 +1053,7 @@ const chrome = (() => {
       this.active = 0;
       this.queue = [];
       this.sequence = 0;
+      this.hostActive = new Map();
     }
 
     setLimit(limit) {
@@ -1050,17 +1090,24 @@ const chrome = (() => {
           + (entry.ages ? (now - entry.queuedAt) * QUEUE_AGING_PER_MS : 0);
         this.queue.sort((a, b) => a.queueClass - b.queueClass || rank(b) - rank(a)
           || a.sequence - b.sequence);
-        const entry = this.queue.shift();
+        // Prefer another host over an already busy one. When only one host has work,
+        // borrow spare slots rather than losing per-request-throttled capacity.
+        const eligible = this.queue.findIndex(item => item.queueClass === this.queue[0].queueClass
+          && (item.queueClass === QUEUE_CRITICAL || (this.hostActive.get(item.host) || 0) < item.hostLimit));
+        const entry = this.queue.splice(eligible < 0 ? 0 : eligible, 1)[0];
         entry.signal?.removeEventListener("abort", entry.cancel);
         if (entry.signal?.aborted) {
           entry.reject(abortError(entry.signal.reason));
           continue;
         }
         this.active += 1;
+        this.hostActive.set(entry.host, (this.hostActive.get(entry.host) || 0) + 1);
         entry.resolve(() => {
           if (entry.released) return;
           entry.released = true;
           this.active = Math.max(0, this.active - 1);
+          const count = (this.hostActive.get(entry.host) || 1) - 1;
+          if (count) this.hostActive.set(entry.host, count); else this.hostActive.delete(entry.host);
           this.drain();
         });
       }
@@ -1068,7 +1115,7 @@ const chrome = (() => {
 
     // deadline: a function giving the clock time playback needs this request, or null; the
     // fixed deadlineAt is what callers without one pass.
-    acquire(signal, priority = 0, deadlineAt = Infinity, queueClass = QUEUE_CRITICAL, ages = false, deadline = null) {
+    acquire(signal, priority = 0, deadlineAt = Infinity, queueClass = QUEUE_CRITICAL, ages = false, deadline = null, host = "", hostLimit = Infinity) {
       if (signal?.aborted) return Promise.reject(abortError(signal.reason));
       return new Promise((resolve, reject) => {
         const entry = {
@@ -1080,6 +1127,7 @@ const chrome = (() => {
           deadlineAt: Number.isFinite(deadlineAt) ? deadlineAt : Infinity,
           deadline,
           queueClass,
+          host, hostLimit,
           ages,
           queuedAt: performance.now(),
           sequence: this.sequence++
@@ -1130,6 +1178,8 @@ const chrome = (() => {
   const AUTO_LOW_BUFFER_SECONDS = 6;
   const AUTO_PRESSURE_MS = 1000;
   const AUTO_ACTIVITY_MS = 1500;
+  const AUTO_MIN_GAIN = 1.1;
+  const AUTO_DOWNSHIFT_MS = 30000;
 
   function createAutoConcurrency({ now = () => performance.now() } = {}) {
     const listeners = new Set();
@@ -1142,7 +1192,7 @@ const chrome = (() => {
       saturated: false, saturatedSince: 0, saturatedSpans: [],
       aheadSamples: [], pressureSince: 0,
       // The start of a session while it runs above the page's own level: { base, until }.
-      startup: null
+      startup: null, comfortableSince: 0, lowerTrial: null
     };
     const threads = () => AUTO_LADDER[state.level];
 
@@ -1195,6 +1245,13 @@ const chrome = (() => {
     // fruitless trial is skipped only by a strong signal (a stall), not by pressure.
     function stepUp(reason, strong) {
       const at = now();
+      if (state.lowerTrial) {
+        const previous = state.lowerTrial.from;
+        state.lowerTrial = null;
+        state.comfortableSince = 0;
+        setLevel(previous, "减少线程后缓冲不足，恢复线程数", null);
+        return true;
+      }
       if (at - state.changedAt < AUTO_STEP_COOLDOWN_MS) return false;
       if (resting(state.level, at)?.hard) return false;
       let next = state.level + 1;
@@ -1221,6 +1278,8 @@ const chrome = (() => {
     }
 
     function stepDown(target, restLevel, reason, restMs, hard) {
+      state.lowerTrial = null;
+      state.comfortableSince = 0;
       state.resting.set(restLevel, { until: now() + restMs, hard });
       if (target >= state.level) return false;
       setLevel(target, reason, null);
@@ -1235,7 +1294,7 @@ const chrome = (() => {
       if (!trial || at - trial.at < AUTO_TRIAL_MS) return;
       state.trial = null;
       if (trial.stalled || saturation(at) < 0.6 || trial.baseline <= 0) return;
-      if (throughput(at) < trial.baseline) {
+      if (throughput(at) < trial.baseline * AUTO_MIN_GAIN) {
         stepDown(trial.from, trial.level, `${AUTO_LADDER[trial.level]} 线程没有比 ${AUTO_LADDER[trial.from]} 线程更快`, AUTO_REST_MS, false);
       }
     }
@@ -1274,6 +1333,24 @@ const chrome = (() => {
       // that has not grown over the last second although bytes keep arriving, for a whole
       // second, means the connections are too few.
       buffer(ahead, playing, at = now()) {
+        if (state.lowerTrial && at - state.lowerTrial.at >= AUTO_TRIAL_MS) {
+          const trial = state.lowerTrial;
+          state.lowerTrial = null;
+          if (ahead < 10 || (saturation(at) >= 0.6 && throughput(at) < trial.baseline * 0.9)) {
+            setLevel(trial.from, "减少线程后速度下降，恢复线程数", null);
+          }
+          state.comfortableSince = 0;
+        }
+        if (!playing || ahead < 20 || state.startup || state.trial || state.lowerTrial || !state.level) state.comfortableSince = 0;
+        else {
+          if (!state.comfortableSince) state.comfortableSince = at;
+          if (at - state.comfortableSince >= AUTO_DOWNSHIFT_MS) {
+            const from = state.level, baseline = throughput(at);
+            setLevel(from - 1, "缓冲充足，试用更少线程", null);
+            state.lowerTrial = { from, at, baseline };
+            state.comfortableSince = 0;
+          }
+        }
         state.aheadSamples.push({ at, ahead });
         while (state.aheadSamples.length && at - state.aheadSamples[0].at > AUTO_PRESSURE_MS + AUTO_BUCKET_MS) state.aheadSamples.shift();
         // The start: once well ahead, one step back down per cooldown towards the page's level.
@@ -1309,6 +1386,8 @@ const chrome = (() => {
         state.aheadSamples.length = 0;
         state.pressureSince = 0;
         state.trial = null;
+        state.lowerTrial = null;
+        state.comfortableSince = 0;
         state.buckets.length = 0;
         state.saturatedSpans.length = 0;
         if (state.saturated) state.saturatedSince = at;
@@ -1333,6 +1412,7 @@ const chrome = (() => {
         state.resting.clear(); state.buckets.length = 0; state.lastActivityAt = -Infinity;
         state.saturated = false; state.saturatedSince = 0; state.saturatedSpans.length = 0;
         state.aheadSamples.length = 0; state.pressureSince = 0; state.startup = null;
+        state.lowerTrial = null; state.comfortableSince = 0;
       }
     });
   }
@@ -1350,6 +1430,17 @@ const chrome = (() => {
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
     const getSettings = options.getSettings;
     const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
+    const diagnostics = { attempts: 0, errors: 0, canceled: 0, networkBytes: 0,
+      deliveredBytes: 0, completedRanges: 0, queueMs: 0, firstBodyByteMs: null, startedAt: performance.now() };
+    const deliveries = [];
+    function delivered(bytes, kind) {
+      if (kind === "meta") return;
+      diagnostics.deliveredBytes += bytes;
+      const at = performance.now();
+      deliveries.push({ at, bytes });
+      while (deliveries.length && at - deliveries[0].at > 5000) deliveries.shift();
+      if (config().autoConcurrency) autoConcurrency.delivered(bytes);
+    }
     // getSettings returns a new object whenever something changes (the userscript's page
     // does), so the reference tells whether the previous normalization is still valid.
     let rawSettings = null;
@@ -1543,8 +1634,13 @@ const chrome = (() => {
       deadline = null, observeProgress = null, queueClass = QUEUE_CRITICAL) {
       const settings = config();
       const deadlineAt = deadline ? deadline() : Infinity;
+      const queuedAt = performance.now();
       const release = await semaphore.acquire(signal, priority, deadlineAt, queueClass,
-        queueClass === QUEUE_ORDINARY && Number.isFinite(deadlineAt), deadline);
+        queueClass === QUEUE_ORDINARY && Number.isFinite(deadlineAt), deadline,
+        new URL(url).hostname, settings.mode === "auto" ? Math.max(2, Math.ceil(settings.concurrency / 2)) : Infinity);
+      const queueMs = performance.now() - queuedAt;
+      diagnostics.queueMs += queueMs;
+      diagnostics.attempts += 1;
       let received = { bytes: 0, chunks: [] };
       if (begin) {
         try {
@@ -1563,11 +1659,19 @@ const chrome = (() => {
       const firstByteTimer = setTimeout(() => controller.abort(new DOMException("CDN 首字节超时", "TimeoutError")), settings.firstByteTimeoutMs);
       const totalTimer = setTimeout(() => controller.abort(new DOMException("CDN 子块总耗时超限", "TimeoutError")), settings.attemptTimeoutMs);
       const startedAt = performance.now();
+      let headersMs = 0, firstBodyMs = 0;
       const report = event => {
         const elapsedMs = Math.max(1, performance.now() - startedAt);
+        if (event.phase === "progress") {
+          diagnostics.networkBytes += Number(event.bytes) || 0;
+          if (!firstBodyMs) {
+            firstBodyMs = elapsedMs;
+            if (kind !== "meta" && diagnostics.firstBodyByteMs === null) diagnostics.firstBodyByteMs = performance.now() - diagnostics.startedAt;
+          }
+        }
         const bps = received.bytes * 1000 / elapsedMs;
         const remaining = Math.max(0, piece.length - received.bytes);
-        const payload = { ...event, receivedBytes: received.bytes, totalBytes: piece.length,
+        const payload = { ...event, queueMs, headersMs, firstByteMs: firstBodyMs || null, receivedBytes: received.bytes, totalBytes: piece.length,
           bps, etaMs: bps > 0 ? Math.round(remaining * 1000 / bps) : null };
         observeProgress?.({ ...payload, elapsedMs });
         return onTransfer(payload);
@@ -1587,6 +1691,7 @@ const chrome = (() => {
           signal: controller.signal
         });
         clearTimeout(firstByteTimer);
+        headersMs = performance.now() - startedAt;
         const contentRange = core.parseContentRange(response.headers.get("content-range"));
         if (response.status !== 206 || !contentRange || contentRange.start !== piece.start || contentRange.end !== piece.end) {
           // The status tells a refused signed address (4xx) apart from a node that is down.
@@ -1597,11 +1702,13 @@ const chrome = (() => {
         const elapsedMs = Math.max(1, performance.now() - startedAt);
         recordMeter(bytes.byteLength, elapsedMs);
         // The node answered either way; only a large enough transfer says how fast it is.
-        resolver.success(url, bytes.byteLength >= SPEED_SAMPLE_MIN_BYTES ? bytes.byteLength * 1000 / elapsedMs : 0);
+        resolver.success(url, bytes.byteLength >= SPEED_SAMPLE_MIN_BYTES ? bytes.byteLength * 1000 / elapsedMs : 0,
+          { firstByteMs: firstBodyMs || headersMs, bodyBps: bytes.byteLength >= SPEED_SAMPLE_MIN_BYTES && elapsedMs - firstBodyMs >= 50 ? bytes.byteLength * 1000 / (elapsedMs - firstBodyMs) : 0 });
         report({ phase: "done", id: transferId });
         return { bytes, total: contentRange.total, url };
       } catch (error) {
         const canceled = error?.name === "AbortError";
+        if (canceled) diagnostics.canceled += 1; else diagnostics.errors += 1;
         // A copy that lost the race was cut off, not broken, and what it had received by then
         // is a measurement of its node. Without it a slow node is never measured at all: its
         // pieces are always finished by a faster copy first, and an unmeasured node only ever
@@ -1835,7 +1942,7 @@ const chrome = (() => {
             controllers.forEach((controller) => {
               if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
             });
-            if (settings.autoConcurrency) autoConcurrency.delivered(piece.length);
+            delivered(piece.length, kind);
             return winner;
           } catch (aggregate) {
             lastError = aggregate?.errors?.at?.(-1) || aggregate;
@@ -1970,12 +2077,17 @@ const chrome = (() => {
 
     // Hands the finished pieces to onOrderedChunk in order: each one as soon as every piece
     // before it has been handed over. done() waits for what has been handed over so far.
-    function orderedDelivery(pieces, onOrderedChunk) {
+    function orderedDelivery(pieces, onOrderedChunk, initialTotal = null) {
       const ordered = new Array(pieces.length);
+      let expectedTotal = initialTotal;
       let next = 0;
       let operation = Promise.resolve();
       return {
         add(index, result) {
+          if (Number.isSafeInteger(result.total)) {
+            if (expectedTotal !== null && expectedTotal !== result.total) throw new Error("不同 CDN 返回的文件总长度不一致");
+            expectedTotal = result.total;
+          }
           ordered[index] = result;
           operation = operation.then(async () => {
             while (ordered[next]) {
@@ -2027,7 +2139,7 @@ const chrome = (() => {
     async function downloadStartupMediaRange(range, resolver, options, settings) {
       const effectiveConcurrency = settings.concurrency;
       semaphore.setLimit(effectiveConcurrency);
-      const candidateUrls = (typeof resolver.rangeCandidates === "function" ? resolver.rangeCandidates() : resolver.urls())
+      const candidateUrls = (typeof resolver.rangeCandidates === "function" ? resolver.rangeCandidates(range.length) : resolver.urls())
         .filter((url, index, all) => all.indexOf(url) === index);
       const headLength = Math.min(range.length, Math.max(64 * 1024, settings.minChunkBytes));
       const head = {
@@ -2071,7 +2183,7 @@ const chrome = (() => {
         pieceBudget,
         adaptiveMinChunk(settings, range.end - head.end, pieceBudget, candidateUrls.length)
       ).map((piece, index) => ({ ...piece, index: index + 1 }));
-      const delivery = orderedDelivery(pieces, options.onOrderedChunk);
+      const delivery = orderedDelivery(pieces, options.onOrderedChunk, headResult.total);
       // The probe measured at least its own winner, so the pieces spread over the nodes by
       // speed at once; the proven address is among each piece's fallbacks, which
       // pieceCandidates orders by measured speed. Only the probe's winner and nodes with a
@@ -2123,7 +2235,7 @@ const chrome = (() => {
         return downloadStartupMediaRange(range, resolver, { ...options, deadline }, settings);
       }
       const preferredUrls = parallel && typeof resolver.rangeCandidates === "function"
-        ? resolver.rangeCandidates()
+        ? resolver.rangeCandidates(range.length)
         : resolver.urls();
       const globalConcurrency = parallel ? settings.concurrency : 1;
       const requestedConcurrency = Number.isFinite(Number(options.maxConcurrency))
@@ -2178,7 +2290,20 @@ const chrome = (() => {
       };
     }
 
-    return Object.freeze({ downloadRange, applySettings, getConcurrency: () => semaphore.limit });
+    return Object.freeze({ downloadRange: async (...args) => {
+      const result = await downloadRange(...args);
+      diagnostics.completedRanges += 1;
+      return result;
+    }, applySettings, getConcurrency: () => semaphore.limit,
+      getDiagnostics() {
+        const at = performance.now();
+        while (deliveries.length && at - deliveries[0].at > 5000) deliveries.shift();
+        const usefulBps = deliveries.reduce((sum, item) => sum + item.bytes, 0) * 1000
+          / Math.max(1000, Math.min(5000, at - diagnostics.startedAt));
+        return { ...diagnostics, usefulBps: Math.round(usefulBps), averageQueueMs: Math.round(diagnostics.queueMs / Math.max(1, diagnostics.attempts)),
+          active: semaphore.active, queued: semaphore.queue.length, concurrency: semaphore.limit };
+      }
+    });
   }
 
   root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader, createAutoConcurrency, autoConcurrency });
@@ -2344,6 +2469,32 @@ const chrome = (() => {
     return String(representation?.baseUrl || representation?.base_url || "");
   }
 
+  // Probe only alternatives at the same quality; explicit codec choices always win.
+  async function smoothRepresentation(playinfo, selected, preferredCodec = "", decode = null) {
+    const capability = decode || root.navigator?.mediaCapabilities?.decodingInfo?.bind(root.navigator.mediaCapabilities);
+    if (preferredCodec || !capability) return selected;
+    const alternatives = (dashBody(playinfo)?.dash?.video || []).filter(item => Number(item.id) === Number(selected.id) && supported(item, "video"));
+    if (alternatives.length < 2) return selected;
+    let timer;
+    try {
+      const results = await Promise.race([
+        Promise.all(alternatives.map(async item => {
+          try {
+            const hint = await capability({ type: "media-source", video: { contentType: mimeFor(item, "video"),
+              width: Number(item.width), height: Number(item.height), bitrate: Number(item.bandwidth), framerate: frameRate(item) } });
+            return { item, hint };
+          } catch (_error) { return { item, hint: null }; }
+        })),
+        new Promise(resolve => { timer = setTimeout(() => resolve(null), 250); })
+      ]);
+      const current = results?.find(result => result.item === selected || sameRepresentation(result.item, selected));
+      if (!current?.hint || (current.hint.supported !== false && current.hint.smooth !== false)) return selected;
+      return results.filter(result => result.hint?.supported && result.hint.smooth)
+        .sort((a, b) => Number(b.hint.powerEfficient) - Number(a.hint.powerEfficient)
+          || codecPriority(b.item) - codecPriority(a.item))[0]?.item || selected;
+    } finally { clearTimeout(timer); }
+  }
+
   // The file without its node and signature: a refreshed playinfo names the same file again.
   function representationPath(representation) {
     try { return new URL(representationUrl(representation)).pathname; }
@@ -2414,9 +2565,11 @@ const chrome = (() => {
     catch (_error) { return fallback; }
   }
 
-  function mediaBytesPerSecond(track) {
-    const segment = track?.sidx?.segments?.[track.startupIndex];
-    if (segment?.durationSeconds > 0 && segment?.length > 0) return segment.length / segment.durationSeconds;
+  function mediaBytesPerSecond(track, time = null) {
+    const segments = track?.sidx?.segments || [];
+    const index = time === null ? track.startupIndex : sidxTools.segmentIndexAt(segments, time);
+    const upcoming = segments.slice(index, index + 3).filter(item => item.durationSeconds > 0 && item.length > 0);
+    if (upcoming.length) return Math.max(...upcoming.map(item => item.length / item.durationSeconds));
     return Math.max(0, Number(track?.representation?.bandwidth) || 0) / 8;
   }
 
@@ -2579,6 +2732,7 @@ const chrome = (() => {
     let sessionStarts = 0;
     let sessionRequests = 0;
     let session = null;
+    let pendingStart = null;
     let destroyed = false;
     let nativeUiReady = typeof options.isNativeUiReady !== "function";
     let uiBufferLimit = 0;
@@ -2608,6 +2762,31 @@ const chrome = (() => {
     // switch back to an earlier quality or codec). Asking for them again cost every such
     // start a round trip to the CDN before any media could be requested.
     const trackHeaders = new Map();
+    const playbackMetrics = { startupReadyMs: null, firstFrameMs: null, seekToFrameMs: null,
+      networkStalls: 0, networkStallMs: 0, dataHoldAt: null };
+    const rate = () => Math.max(0.25, Math.abs(Number(video.playbackRate) || 1));
+    function endDataHold() {
+      if (playbackMetrics.dataHoldAt === null) return;
+      playbackMetrics.networkStallMs += performance.now() - playbackMetrics.dataHoldAt;
+      playbackMetrics.dataHoldAt = null;
+    }
+    function beginDataHold(candidate) {
+      if (!candidate.playbackActivated || !candidate.resumeWanted || video.seeking || video.ended || playbackMetrics.dataHoldAt !== null) return;
+      playbackMetrics.networkStalls += 1;
+      playbackMetrics.dataHoldAt = performance.now();
+    }
+    function watchPresentedFrame(candidate, seeking = false) {
+      if (typeof video.requestVideoFrameCallback !== "function") return;
+      if (candidate.frameCallbackId != null) video.cancelVideoFrameCallback?.(candidate.frameCallbackId);
+      const began = seeking ? performance.now() : candidate.sessionStartedAt;
+      candidate.frameCallbackId = video.requestVideoFrameCallback(() => {
+        candidate.frameCallbackId = null;
+        if (!sessionIsCurrent(candidate)) return;
+        const elapsed = Math.round(performance.now() - began);
+        if (seeking) playbackMetrics.seekToFrameMs = elapsed;
+        else if (playbackMetrics.firstFrameMs === null) playbackMetrics.firstFrameMs = elapsed;
+      });
+    }
     const timeline = [];
     function note(what, detail = "") {
       timeline.push({ at: Math.round(performance.now()), time: Math.round((Number(video.currentTime) || 0) * 10) / 10, what, detail: String(detail) });
@@ -2704,6 +2883,7 @@ const chrome = (() => {
           const shown = readsAsPlaying();
           session.resumeWanted = false;
           session.viewerPaused = true;
+          endDataHold();
           if (shown) video.dispatchEvent(new Event("pause"));
         }
       });
@@ -2753,6 +2933,8 @@ const chrome = (() => {
         startupThroughputBps: session?.startupThroughputBps || 0,
         mediaBytesPerSecond: session?.mediaBytesPerSecond || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
+        usefulThroughputBps: downloader.getDiagnostics?.().usefulBps || 0,
+        playbackDemandBps: session?.tracks?.reduce((sum, track) => sum + mediaBytesPerSecond(track, current), 0) * rate() || 0,
         cdnHosts: health,
         ...extra
       });
@@ -2929,17 +3111,18 @@ const chrome = (() => {
     // check with the same bytes over a longer time, so the longer the player waited for its
     // target, the slower the network looked and the further the target moved away.
     function updateStartupProfile(candidate) {
-      if (candidate.startupProfiled) return candidate.startupTargetSeconds;
+      if (candidate.startupProfiled) return candidate.startupTargetSeconds = candidate.startupWallSeconds * rate();
       candidate.startupProfiled = candidate.tracks.length > 0 && candidate.tracks.every((track) => track.startupComplete);
       const elapsedSeconds = Math.max(0.25, (performance.now() - candidate.startupStartedAt) / 1000);
       const throughput = candidate.startupCompletedBytes / elapsedSeconds;
-      const required = candidate.tracks.reduce((sum, track) => sum + mediaBytesPerSecond(track), 0);
+      const required = candidate.tracks.reduce((sum, track) => sum + mediaBytesPerSecond(track), 0) * rate();
       const ratio = required > 0 ? throughput / required : 0;
       let target = ratio >= 3 ? STARTUP_BUFFER_MIN_SECONDS : ratio >= 1.8 ? 4 : ratio >= 1.25 ? 6 : ratio > 0 ? 8 : 6;
       if ((Number(selectedVideo?.height) || 0) >= 2160 && ratio < 1.8) target = Math.max(target, 8);
       candidate.startupThroughputBps = throughput;
       candidate.mediaBytesPerSecond = required;
-      candidate.startupTargetSeconds = Math.max(STARTUP_BUFFER_MIN_SECONDS, Math.min(STARTUP_BUFFER_MAX_SECONDS, target));
+      candidate.startupWallSeconds = Math.max(STARTUP_BUFFER_MIN_SECONDS, Math.min(STARTUP_BUFFER_MAX_SECONDS, target));
+      candidate.startupTargetSeconds = candidate.startupWallSeconds * rate();
       return candidate.startupTargetSeconds;
     }
 
@@ -3062,6 +3245,9 @@ const chrome = (() => {
             projectedEnd = segment.endTime;
             if (track.prefetches.has(index) || track.held?.index === index || alreadyBuffered(track, index)) continue;
             const startup = !track.startupComplete && index === track.startupIndex;
+            const progressive = startup || (core.normalizeSettings(getSettings()).progressiveMedia
+              && offset === 0 && !core.normalizeSettings(getSettings()).secondaryBuffer
+              && bufferedEndAt(track.sourceBuffer, current) - current < 3 * rate());
             track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
               startup,
@@ -3072,7 +3258,7 @@ const chrome = (() => {
               // The first segment is written piece by piece as it arrives. A full buffer here,
               // with next to nothing buffered yet, ends the download and the takeover as it
               // always did; only whole segments further on are kept and written later.
-              onOrderedChunk: startup ? async (bytes) => {
+              onOrderedChunk: progressive ? async (bytes) => {
                 if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) return;
                 candidate.progressiveAppends += 1;
                 await append(candidate, track, bytes, generation);
@@ -3189,6 +3375,7 @@ const chrome = (() => {
     // Pauses the element to wait for data. Its "pause" event comes later and only if it was
     // playing; counting those keeps it from being read as the viewer's pause.
     function pauseForData(candidate) {
+      beginDataHold(candidate);
       if (!elementPaused()) candidate.ownPauses += 1;
       pauseElement();
       beginHold(candidate);
@@ -3239,6 +3426,7 @@ const chrome = (() => {
       const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || target + required) - target);
       if (Math.min(...ends) - target < Math.max(0.5, Math.min(required, remaining))) return;
       candidate.playbackActivated = true;
+      if (playbackMetrics.startupReadyMs === null) playbackMetrics.startupReadyMs = Math.round(performance.now() - candidate.sessionStartedAt);
       note("ready to play", `needed ${required.toFixed(1)} s buffered`);
       noteSeekSettled();
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
@@ -3282,7 +3470,7 @@ const chrome = (() => {
         candidate.recovering = true;
         candidate.resumeWanted = true;
         candidate.playAttempted = false;
-        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
+        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS * rate(), updateStartupProfile(candidate));
         candidate.underflowRebuffers += 1;
         note("rebuffer before underflow", `${ahead.toFixed(2)}s ahead`);
         options.onLog?.("前方缓冲快用完了", "先暂停播放，等声音和画面都备好再一起继续。", "info", "buffer");
@@ -3319,6 +3507,8 @@ const chrome = (() => {
 
     function disposeSession(candidate, detach = true) {
       if (!candidate || candidate.disposed) return;
+      endDataHold();
+      if (candidate.frameCallbackId != null) video.cancelVideoFrameCallback?.(candidate.frameCallbackId);
       candidate.disposed = true;
       candidate.generation = ++generationSequence;
       candidate.controller.abort(new DOMException("播放任务已取消", "AbortError"));
@@ -3347,6 +3537,11 @@ const chrome = (() => {
       downloaderFactory.autoConcurrency?.newSession();
       if (destroyed) return;
       const request = ++sessionRequests;
+      pendingStart = { ...playbackState, request };
+      if (!preferredCodec && root.navigator?.mediaCapabilities?.decodingInfo) {
+        representation = await smoothRepresentation(currentPlayinfo, representation, preferredCodec);
+        if (destroyed || request !== sessionRequests) return;
+      }
       const settling = nativeSourceSettled(video);
       if (settling) {
         const waitedFrom = performance.now();
@@ -3373,9 +3568,9 @@ const chrome = (() => {
         timer: null, endRetryTimer: null, tracks: [], ending: false, streamEnded: false,
         playAttempted: false, playbackActivated: false, playbackActivatedAt: 0,
         recovering: false, recoveryTargetSeconds: STARTUP_RECOVERY_SECONDS, bufferAheadLimit: 0, quotaWaits: 0,
-        startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
+        startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(), sessionStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
-        startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
+        startupTargetSeconds: 6 * rate(), startupWallSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
         startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, takeoverPause: false, holdStartedAt: 0, holdTimer: null,
         // A start that replaces one the viewer paused (a quality switch while it loads) is
         // one the viewer paused too.
@@ -3390,6 +3585,8 @@ const chrome = (() => {
       };
       openGeneration(candidate);
       session = candidate;
+      pendingStart = null;
+      watchPresentedFrame(candidate);
       if (previous) disposeSession(previous, false);
       // The start is a wait for data too.
       beginHold(candidate);
@@ -3499,7 +3696,7 @@ const chrome = (() => {
       // Once playing, the wait for the new position is the same wait as a rebuffer.
       if (candidate.playbackActivated) {
         candidate.recovering = true;
-        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
+        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS * rate(), updateStartupProfile(candidate));
         candidate.playAttempted = false;
         candidate.seekPending = true;
         pauseForData(candidate);
@@ -3568,7 +3765,19 @@ const chrome = (() => {
     }
 
     video.addEventListener("loadedmetadata", () => { if (session) session.metadataAt = performance.now(); }, { signal: eventController.signal });
-    video.addEventListener("seeking", scheduleSeek, { signal: eventController.signal });
+    video.addEventListener("seeking", () => {
+      endDataHold();
+      const previousRequest = seekRequestedAt;
+      scheduleSeek();
+      if (session && seekRequestedAt !== previousRequest) watchPresentedFrame(session, true);
+    }, { signal: eventController.signal });
+    video.addEventListener("ratechange", () => {
+      if (session?.startupProfiled) {
+        updateStartupProfile(session);
+        session.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS * rate(), session.startupTargetSeconds);
+      }
+      ensureBuffer();
+    }, { signal: eventController.signal });
     video.addEventListener("timeupdate", () => {
       ensureBuffer();
       // 自动线程数 watches the buffer ahead of the playhead while playing.
@@ -3576,7 +3785,7 @@ const chrome = (() => {
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.tracks.length && core.normalizeSettings(getSettings()).autoConcurrency) {
         const current = Number(video.currentTime) || 0;
         const ahead = Math.max(0, Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current);
-        downloaderFactory.autoConcurrency?.buffer(ahead, !elementPaused() && !video.seeking);
+        downloaderFactory.autoConcurrency?.buffer(ahead / rate(), !elementPaused() && !video.seeking);
       }
     }, { signal: eventController.signal });
     video.addEventListener("waiting", () => {
@@ -3584,12 +3793,13 @@ const chrome = (() => {
       note("waiting", candidate?.playbackActivated ? "after start" : "before start");
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated) {
         candidate.startupWaitingEvents += 1;
-        const recoveryTarget = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+        const recoveryTarget = Math.min(STARTUP_BUFFER_MAX_SECONDS * rate(), Math.max(STARTUP_RECOVERY_SECONDS * rate(), updateStartupProfile(candidate) + 2 * rate()));
         // With that much already buffered ahead the element waits for its decoder, not for
         // data: a device that decodes the stream too slowly (#58). Pausing for data ended at
         // once and the element waited again, thousands of times a minute, and more threads do
         // not decode any faster.
         const dataMissing = !waitIsOver(candidate, recoveryTarget);
+        if (!waitIsOver(candidate, rate())) beginDataHold(candidate);
         if (dataMissing && !video.seeking && !elementPaused() && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
         if (seekSettledAt && performance.now() - seekSettledAt < 15000 && !video.seeking) stallsAfterSeek += 1;
         if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking && dataMissing) {
@@ -3620,9 +3830,12 @@ const chrome = (() => {
       if (!candidate || !sessionIsCurrent(candidate)) return;
       if (candidate.takeoverPause) candidate.takeoverPause = false;
       else if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
-      else if (changesIntent(candidate)) {
-        candidate.resumeWanted = false;
-        candidate.viewerPaused = true;
+      else {
+        endDataHold();
+        if (changesIntent(candidate)) {
+          candidate.resumeWanted = false;
+          candidate.viewerPaused = true;
+        }
       }
     }, { signal: eventController.signal });
     video.addEventListener("loadstart", () => {
@@ -3630,9 +3843,10 @@ const chrome = (() => {
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
-    video.addEventListener("playing", () => note("playing"), { signal: eventController.signal });
+    video.addEventListener("playing", () => { endDataHold(); note("playing"); }, { signal: eventController.signal });
     video.addEventListener("ended", () => {
       endedAt = performance.now();
+      endDataHold();
       publishState({ playerState: "ended", bufferedAhead: 0 });
     }, { signal: eventController.signal });
 
@@ -3641,6 +3855,7 @@ const chrome = (() => {
     // the session remembers the intent. Reading video.paused then made a second drag of the
     // progress bar, or a quality change during loading, leave the video paused for good.
     function wantsToPlay() {
+      if (pendingStart && !session?.playbackActivated) return Boolean(pendingStart.resume);
       const candidate = session;
       if (candidate?.externalSourceDetected) return lastSeen.playing;
       if (candidate && sessionIsCurrent(candidate) && (!candidate.playbackActivated || candidate.recovering)) return Boolean(candidate.resumeWanted);
@@ -3650,6 +3865,7 @@ const chrome = (() => {
     // Where the viewer is in the video. A session that is still starting has just given the
     // element its source, which reads zero until the session has moved it to its start.
     function playbackPosition() {
+      if (pendingStart && !session?.playbackActivated) return Math.max(0, Number(pendingStart.time) || 0);
       const candidate = session;
       if (candidate?.externalSourceDetected) return lastSeen.time;
       const current = Number(video.currentTime) || 0;
@@ -3871,7 +4087,12 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.30.1",
+        transfer: downloader.getDiagnostics?.() || null,
+        performance: { ...playbackMetrics, networkStallMs: Math.round(playbackMetrics.networkStallMs
+          + (playbackMetrics.dataHoldAt === null ? 0 : performance.now() - playbackMetrics.dataHoldAt)) },
+        playableWallSeconds: session?.tracks?.length ? Math.max(0, Math.min(...session.tracks.map(track => bufferedEndAt(track.sourceBuffer, Number(video.currentTime) || 0))) - (Number(video.currentTime) || 0)) / rate() : 0,
+        playbackDemandBps: session?.tracks?.reduce((sum, track) => sum + mediaBytesPerSecond(track, Number(video.currentTime) || 0), 0) * rate() || 0,
+        version: "2026.11.2.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3925,7 +4146,7 @@ const chrome = (() => {
   installNativeErrorGuard();
   installMediaSourceWatch();
   installCodecFailureGuard();
-  root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = Object.freeze({ createNativePlayer, playbackDeadlineAt, qualityLabel, selectRepresentations });
+  root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = Object.freeze({ createNativePlayer, playbackDeadlineAt, qualityLabel, selectRepresentations, smoothRepresentation });
 })(globalThis);
 
 /* src/native-range-transport.js */
@@ -4483,8 +4704,12 @@ const chrome = (() => {
       if (name !== "timeupdate" && name !== "progress") note(`media ${name}`, `buffer ${bufferedAhead().toFixed(2)}s`);
       if (name === "error") options.onLog?.("B 站播放器出错了", video.error?.message || `媒体错误 ${video.error?.code}`, "error", "playback");
       if (name === "playing") lastError = "";
-      if (name === "timeupdate") sampleQuality();
-      else publish();
+      if (name === "timeupdate") {
+        sampleQuality();
+        if (settings().autoConcurrency) downloaders.autoConcurrency?.buffer(bufferedAhead() / Math.max(0.25, Math.abs(Number(video.playbackRate) || 1)), !video.paused && !video.seeking);
+      }
+      if (name === "waiting" && !video.paused && !video.seeking && bufferedAhead() < 1 && settings().autoConcurrency) downloaders.autoConcurrency?.stall();
+      if (name !== "timeupdate") publish();
     }, { signal: events.signal });
     active = owner;
     note("native transport attached");
@@ -4499,7 +4724,7 @@ const chrome = (() => {
       },
       async updatePlayinfo(playinfo) { update(playinfo); },
       destroy: owner.destroy,
-      getDebug: () => ({ architecture: "native-player-range-transport", transportRevision: 6, qualityGuardRevision: 11, nativeQualityGuard: !!guardedDash,
+      getDebug: () => ({ transfer: owner.downloader.getDiagnostics?.() || null, architecture: "native-player-range-transport", transportRevision: 6, qualityGuardRevision: 11, nativeQualityGuard: !!guardedDash,
         qualityId: Number(qualityState.split("/")[0]) || 0, downloadedQualityId: Number(lastVideo?.id) || 0,
         width: video.videoWidth, height: video.videoHeight, currentTime: Number(video.currentTime) || 0,
         videoType: lastVideo?.mimeType || lastVideo?.mime_type || "", audioType: lastAudio?.mimeType || lastAudio?.mime_type || "",
@@ -4683,6 +4908,9 @@ const chrome = (() => {
   const core = root.__BILI_RANGE_CORE__;
   const cdn = root.__BILI_CDN_RESOLVER_FACTORY__;
   if (!core || !cdn) return;
+  // The desktop app opens this same panel. It names what the client has no use for and adds
+  // its own block (its src/panel-bridge.js); the userscript sets none of this.
+  const hostApp = root.__BTR_PANEL_HOST__;
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   // Which script this is: the released one, or the Canary built from main.
@@ -4693,11 +4921,12 @@ const chrome = (() => {
   const HOST_ID = "__bilibili_thread_ripper_settings__";
   const DIALOG_ID = "__bilibili_thread_ripper_settings_dialog__";
   const LAUNCHER_ID = "__bilibili_thread_ripper_launcher__";
+  const GUIDE_ID = "__bilibili_thread_ripper_guide__";
   const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128];
   const BUFFER_OPTIONS = [30, 45, 90, 180];
   const MAX_CUSTOM_HOSTS = 32;
   const HOST_GROUPS = [["大陆节点", cdn.MAINLAND_HOSTS], ["海外节点", cdn.OVERSEAS_HOSTS]];
-  const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
+  const PROJECT_URL = "https://github.com/salileoss/Bilibili-thread-ripper";
   // GitHub's mark.
   const GITHUB_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>`;
   // The script's own icon, icons/icon-128.png (dev/userscript-test.js checks the two stay the same).
@@ -4765,7 +4994,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.30.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.2.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4816,6 +5045,7 @@ const chrome = (() => {
             <div class="block" data-needs-enabled>
               <h2 class="block-title">CDN 模式</h2>
               <section class="mode-select" aria-label="CDN 模式">
+                <label><input type="radio" name="mode" value="auto"><span>自动优选</span></label>
                 <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
                 <label><input type="radio" name="mode" value="overseas"><span>海外</span></label>
                 <label><input type="radio" name="mode" value="custom"><span>自定义</span></label>
@@ -4858,7 +5088,7 @@ const chrome = (() => {
             <div class="block" data-needs-enabled>
               <section class="controls buffer-controls" aria-label="缓冲">
                 <div class="control-title">
-                  <label for="buffer-ahead" class="row-text">全接管预缓冲时长<small>可能受到浏览器150MiB限制</small></label>
+                  <label for="buffer-ahead" class="row-text">全接管预缓冲时长<small>受浏览器缓冲容量和内存限制</small></label>
                   <output id="buffer-value" for="buffer-ahead">45s</output>
                 </div>
                 <div class="slider">
@@ -4869,6 +5099,7 @@ const chrome = (() => {
                   <span>30s</span><span>45s</span><span>90s</span><span>180s</span>
                 </div>
                 <label class="auto-row" for="secondary-buffer"><span class="row-text">开启二级缓冲（实验性）<small>尝试绕过浏览器视频缓冲容量限制</small></span><span class="switch"><input id="secondary-buffer" type="checkbox" aria-label="开启二级缓冲（实验性）"><span></span></span></label>
+                <label class="auto-row" for="progressive-media"><span class="row-text">低缓冲渐进写入（实验性）<small>全接管模式下优先写入即将播放的数据，默认关闭。</small></span><span class="switch"><input id="progressive-media" type="checkbox" aria-label="低缓冲渐进写入（实验性）"><span></span></span></label>
               </section>
             </div>
           </div>
@@ -4910,6 +5141,9 @@ const chrome = (() => {
                   <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
                 </fieldset>
               </section>
+            </div>
+            <div class="block">
+              <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
             </div>
           </div>
           <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
@@ -4975,7 +5209,7 @@ const chrome = (() => {
     .switch input:checked + span { background: #fb7299; }
     .switch input:checked + span::after { transform: translateX(18px); }
     .switch input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
-    .mode-select { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    .mode-select { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; padding: 3px; border-radius: 10px; background: var(--surface); }
     .mode-select label { position: relative; }
     .mode-select input { position: absolute; opacity: 0; }
     .mode-select span { display: block; padding: 8px 6px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; text-align: center; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
@@ -5049,6 +5283,10 @@ const chrome = (() => {
     .debug-copy-status { color: var(--success); font-size: 12px; }
     .debug-copy-status.failed { color: var(--error); }
     .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .reset-settings { width: 100%; padding: 11px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    .reset-settings:hover { background: var(--hover); }
+    .reset-settings[data-asking] { color: var(--error); font-weight: 600; }
+    .reset-settings:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
     .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
@@ -5068,7 +5306,7 @@ const chrome = (() => {
     .advanced > summary small { display: block; margin-top: 6px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
     .view-main, .tab-panel { display: grid; gap: 14px; align-content: start; min-width: 0; }
     .view-main { margin-bottom: 14px; }
-    .tab-panel[hidden] { display: none; }
+    .tab-panel[hidden], [data-host-hidden] { display: none !important; }
     .block { min-width: 0; }
     .block-title { margin: 0 0 6px 2px; color: var(--subtle); font-size: 11px; font-weight: 600; line-height: 1.4; }
     .control-title small { display: block; margin-top: 2px; color: var(--subtle); font-size: 11px; }
@@ -5105,8 +5343,36 @@ const chrome = (() => {
     .btr-launcher.dragging { cursor: grabbing; opacity: 1; transform: scale(1.1); transition: opacity 160ms ease, transform 160ms ease; }
     @media (max-width: 700px) { .btr-launcher { width: 40px; height: 40px; font-size: 12px; } }
     .btr-launcher { --ripple: rgba(255, 255, 255, .35); }
+    .btr-launcher.guiding { opacity: 1; animation: btr-guide-pulse 1.6s ease-in-out infinite; }
+    @keyframes btr-guide-pulse { 50% { transform: scale(1.14); } }
+    @media (prefers-reduced-motion: reduce) { .btr-launcher.guiding { animation: none; } }
     ${RIPPLE_CSS}
   `;
+  const GUIDE_CSS = `
+    .btr-guide { position: fixed; inset: 0; background: rgba(0, 0, 0, .72); cursor: pointer; font: 16px/1.5 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+    .btr-guide p { position: absolute; left: 50%; top: 42%; margin: 0; color: #fff; font-size: 22px; white-space: nowrap; transform: translate(-50%, -50%); }
+    .btr-guide b { color: #fb7299; font-weight: 700; }
+    .btr-guide svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .btr-guide path { fill: none; stroke: #fff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    @media (max-width: 480px) { .btr-guide p { font-size: 17px; } }
+  `;
+  // The guide used to come back on every Bilibili subdomain: its record was in that site's
+  // localStorage (#26). It is now in the stored settings (the script manager's, shared by all
+  // subdomains), with a cookie on .bilibili.com for when those fall back to localStorage. Both
+  // reach every subdomain, so 恢复默认设置 can take the record back everywhere.
+  // The desktop client is one site, and it brings its cookies back by itself each time it
+  // starts: there a cookie has nothing to do and could not be cleared.
+  const GUIDE_COOKIE = "BTR.guideDone";
+  function writeGuideCookie(value, seconds) {
+    if (hostApp) return;
+    try { document.cookie = `${GUIDE_COOKIE}=${value}; domain=.bilibili.com; path=/; max-age=${seconds}; SameSite=Lax; Secure`; } catch (_error) {}
+  }
+  function guideMarked() {
+    if (hostApp) return false;
+    try { return document.cookie.split("; ").includes(`${GUIDE_COOKIE}=1`); } catch (_error) { return false; }
+  }
+  const markGuide = () => writeGuideCookie("1", 315360000);
+  const forgetGuide = () => writeGuideCookie("", 0);
 
   let current = null;
   // bridge.js sends the stored settings when they load or change, and the page its stats.
@@ -5123,7 +5389,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.30.1",
+        BTR: "2026.11.2.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5173,7 +5439,7 @@ const chrome = (() => {
     dialog.append(dialogStyle, host);
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = PANEL_CSS;
+    style.textContent = PANEL_CSS + (hostApp?.css || "");
     const backdrop = document.createElement("div");
     backdrop.className = "btr-backdrop";
     const panel = document.createElement("div");
@@ -5197,9 +5463,14 @@ const chrome = (() => {
       alsoRunning.textContent = `正式版和 Canary 同时启用了。现在生效的是${CHANNEL_NAMES[SCRIPT_CHANNEL]}，${CHANNEL_NAMES[other] || other}没有运行。请在脚本管理器里只启用一个。`;
       alsoRunning.hidden = false;
     }
+    for (const selector of hostApp?.hide || []) {
+      for (const node of panel.querySelectorAll(selector)) (node.closest(".block") || node).dataset.hostHidden = "";
+    }
+    if (hostApp?.projectUrl) $("github-link").href = hostApp.projectUrl;
+    hostApp?.mount?.(panel);
     const advanced = $("advanced");
     const panelMain = panel.querySelector("main");
-    const tabs = [...panel.querySelectorAll('[role="tab"]')];
+    const tabs = [...panel.querySelectorAll('[role="tab"]:not([data-host-hidden])')];
     const tabPanels = [...panel.querySelectorAll("[data-tab-panel]")];
     const still = () => root.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const EASE = "cubic-bezier(.2, .8, .2, 1)";
@@ -5297,6 +5568,7 @@ const chrome = (() => {
     const bufferValue = $("buffer-value");
     const bufferFill = $("buffer-fill");
     const secondaryBuffer = $("secondary-buffer");
+    const progressiveMedia = $("progressive-media");
     const errorNotices = $("error-notices");
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
@@ -5304,6 +5576,7 @@ const chrome = (() => {
     const blockInternational = $("block-international");
     const floatingButton = $("floating-button");
     const debugFilters = $("debug-filters");
+    const resetSettings = $("reset-settings");
     const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
     const customSection = $("custom-hosts");
     const hostInput = $("host-input");
@@ -5393,6 +5666,7 @@ const chrome = (() => {
       setSlider(settings.concurrency);
       setBufferSlider(settings.bufferAheadSeconds);
       secondaryBuffer.checked = settings.secondaryBuffer === true;
+      progressiveMedia.checked = settings.progressiveMedia === true;
       concurrency.disabled = autoConcurrency.checked;
       concurrency.closest(".controls").classList.toggle("auto", autoConcurrency.checked);
       setMode(settings.mode);
@@ -5436,6 +5710,7 @@ const chrome = (() => {
       save({ bufferAheadSeconds: seconds });
     });
     secondaryBuffer.addEventListener("change", () => save({ secondaryBuffer: secondaryBuffer.checked }));
+    progressiveMedia.addEventListener("change", () => save({ progressiveMedia: progressiveMedia.checked }));
     for (const radio of shadow.querySelectorAll('input[name="mode"]')) {
       radio.addEventListener("change", () => {
         if (!radio.checked) return;
@@ -5473,6 +5748,27 @@ const chrome = (() => {
         setCustomHosts([...customHosts, value]);
       }
     });
+    // It asks in place: the second click is the answer, and going elsewhere takes the question back.
+    let resetAsked = 0;
+    const stopAsking = () => {
+      root.clearTimeout(resetAsked);
+      delete resetSettings.dataset.asking;
+      resetSettings.textContent = "恢复默认设置";
+    };
+    resetSettings.addEventListener("click", () => {
+      if (resetSettings.dataset.asking) {
+        stopAsking();
+        // Back to first use: the guide comes up again as soon as the panel is out of the way.
+        forgetGuide();
+        post("settings-reset");
+        current?.close();
+        return;
+      }
+      resetSettings.dataset.asking = "true";
+      resetSettings.textContent = "确认？";
+      resetAsked = root.setTimeout(stopAsking, 4000);
+    });
+    resetSettings.addEventListener("blur", stopAsking);
     errorNotices.addEventListener("change", () => save({ errorNotices: errorNotices.checked }));
     debugNotices.addEventListener("change", () => {
       debugFilters.hidden = !debugNotices.checked;
@@ -5536,6 +5832,8 @@ const chrome = (() => {
     };
     const timer = setInterval(refresh, 400);
     const onKey = (event) => { if (event.key === "Escape") close(); };
+    // However the panel was found, the viewer has found it.
+    launcher?.finishGuide();
     const close = () => {
       if (current?.host !== host) return;
       current = null;
@@ -5589,6 +5887,68 @@ const chrome = (() => {
     let leftRatio = null;
     let topRatio = null;
     let dragging = null;
+    // The first-run guide waits for the stored settings: before they arrive nobody knows
+    // whether it was answered already.
+    let guide = null;
+    let guideAnswered = null;
+
+    function finishGuide() {
+      if (guideAnswered === true && !guide) return;
+      guideAnswered = true;
+      markGuide();
+      post("settings-update", { guideDone: true });
+      hideGuide();
+    }
+
+    function hideGuide() {
+      if (!guide) return;
+      root.cancelAnimationFrame(guide.frame);
+      guide.host.remove();
+      guide = null;
+      button?.classList.remove("guiding");
+    }
+
+    // The arrow is drawn again on every frame, so it stays on the button however the button
+    // or the window moves: from the edge of the text, curving, to just short of the button.
+    function drawGuide() {
+      if (!guide || !button?.isConnected) return;
+      guide.frame = root.requestAnimationFrame(drawGuide);
+      const target = button.getBoundingClientRect(), text = guide.text.getBoundingClientRect();
+      const toX = target.left + target.width / 2, toY = target.top + target.height / 2;
+      const fromX = text.left + text.width / 2, fromY = text.top + text.height / 2;
+      const distance = Math.hypot(toX - fromX, toY - fromY) || 1;
+      const unitX = (toX - fromX) / distance, unitY = (toY - fromY) / distance;
+      // Where the line from the text's middle leaves its box.
+      const leave = Math.min(unitX ? (text.width / 2 + 14) / Math.abs(unitX) : Infinity, unitY ? (text.height / 2 + 14) / Math.abs(unitY) : Infinity);
+      const stop = target.width / 2 + 16;
+      if (distance - leave - stop < 24) { guide.arrow.setAttribute("d", ""); return; }
+      const startX = fromX + unitX * leave, startY = fromY + unitY * leave;
+      const endX = toX - unitX * stop, endY = toY - unitY * stop;
+      const bend = (distance - leave - stop) * .18;
+      const bendX = (startX + endX) / 2 - unitY * bend, bendY = (startY + endY) / 2 + unitX * bend;
+      const angle = Math.atan2(endY - bendY, endX - bendX);
+      const barb = (side) => `${(endX - 15 * Math.cos(angle + side)).toFixed(1)} ${(endY - 15 * Math.sin(angle + side)).toFixed(1)}`;
+      guide.arrow.setAttribute("d", `M${startX.toFixed(1)} ${startY.toFixed(1)} Q${bendX.toFixed(1)} ${bendY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)} M${barb(.5)} L${endX.toFixed(1)} ${endY.toFixed(1)} L${barb(-.5)}`);
+    }
+
+    function showGuide() {
+      const guideHost = document.createElement("div");
+      guideHost.id = GUIDE_ID;
+      guideHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483644!important;";
+      const shadow = guideHost.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = GUIDE_CSS;
+      const cover = document.createElement("div");
+      cover.className = "btr-guide";
+      cover.innerHTML = '<p>点这里打开全新 <b>线程撕裂者</b> 设置</p><svg aria-hidden="true"><path></path></svg>';
+      // A click anywhere on it counts: it is the only thing on the screen that can be clicked.
+      cover.addEventListener("click", () => open());
+      shadow.append(style, cover);
+      (document.body || document.documentElement).append(guideHost);
+      guide = { host: guideHost, text: cover.querySelector("p"), arrow: cover.querySelector("path"), frame: 0 };
+      button.classList.add("guiding");
+      drawGuide();
+    }
 
     // Bilibili fills the screen in two ways: the browser fullscreen API, and its own 网页全屏,
     // which only resizes the player inside the page. Rather than follow Bilibili class names,
@@ -5726,12 +6086,15 @@ const chrome = (() => {
     function apply() {
       const show = wanted && !fullscreen() && !current;
       if (!show) {
+        hideGuide();
         host?.remove();
         return;
       }
       // Bilibili replaces large parts of the page when you navigate; mount puts it back if it went.
       mount();
       if (!dragging) place();
+      if (guide && !(guide.host.isConnected && button.isConnected)) hideGuide();
+      if (guideAnswered === false && !guide) showGuide();
     }
 
     const update = (settings) => {
@@ -5740,6 +6103,15 @@ const chrome = (() => {
       const ratio = (value) => (value != null && Number(value) >= 0 && Number(value) <= 1 ? Number(value) : null);
       leftRatio = ratio(settings?.floatingButtonLeft);
       topRatio = ratio(settings?.floatingButtonTop);
+      if (settings?.guideDone === true) {
+        guideAnswered = true;
+        markGuide();
+        hideGuide();
+      } else if (guideMarked()) {
+        // Answered on another subdomain or before the stored settings could take it.
+        guideAnswered = false;
+        finishGuide();
+      } else guideAnswered = false;
       apply();
     };
     for (const type of ["fullscreenchange", "webkitfullscreenchange"]) document.addEventListener(type, apply, true);
@@ -5749,7 +6121,7 @@ const chrome = (() => {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply, { once: true });
     // The button is on by default, so it is there before the stored settings arrive.
     apply();
-    return { update, apply };
+    return { update, apply, finishGuide };
   })();
 
   root.addEventListener("message", (event) => {
@@ -5772,6 +6144,9 @@ const chrome = (() => {
   });
   // The userscript manager's menu entry.
   document.addEventListener("btr-userscript-open-settings", () => { if (root.top === root) toggle(); });
+
+  // Settings sent before this file ran went unheard.
+  post("get-settings");
 
   root.__BTR_SETTINGS_PANEL__ = Object.freeze({ open, close: () => current?.close(), toggle, isOpen: () => Boolean(current) });
 })(globalThis);
@@ -5859,7 +6234,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.30.1",
+    version: "2026.11.2.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -6610,7 +6985,13 @@ const chrome = (() => {
   function preconnectCdnNodes(route) {
     const factory = root.__BILI_CDN_RESOLVER_FACTORY__;
     const custom = settings.mode === "custom" ? settings.customHosts : [];
-    const hosts = custom.length ? custom : settings.mode === "overseas" ? factory?.OVERSEAS_HOSTS : factory?.MAINLAND_HOSTS;
+    const info = currentPlayinfo(routeIdentity());
+    const originals = (info?.data || info?.result || info)?.dash?.video || [];
+    const hosts = custom.length ? custom : settings.mode === "auto"
+      ? [...new Set([...originals.slice(0, 1).flatMap(item => [item.baseUrl || item.base_url, ...[].concat(item.backupUrl || item.backup_url || [])])
+        .filter(Boolean).map(value => { try { return new URL(value).hostname; } catch (_error) { return ""; } }).filter(host => core.normalizeCdnHost?.(host)),
+        ...(factory?.OVERSEAS_HOSTS || []).slice(0, 2), ...(factory?.MAINLAND_HOSTS || []).slice(0, 1)])].filter(Boolean).slice(0, 3)
+      : settings.mode === "overseas" ? factory?.OVERSEAS_HOSTS : factory?.MAINLAND_HOSTS;
     const key = `${settings.mode}:${custom.join(",")}:${route}`;
     if (preconnectKey === key) return;
     const parent = document.head || document.documentElement;
@@ -6695,6 +7076,7 @@ const chrome = (() => {
       panel.dataset.btrStrategy = "native-ui-progressive-mse-0.8-core";
       panel.append(
         settingGroup("线程撕裂者 CDN", "btr-native-mode", [
+          { label: "自动优选", value: "auto" },
           { label: "大陆 CDN", value: "mainland" },
           { label: "海外 CDN", value: "overseas" },
           { label: "自定义", value: "custom" }
@@ -6704,7 +7086,7 @@ const chrome = (() => {
       panel.addEventListener("change", (event) => {
         const input = event.target;
         if (!(input instanceof HTMLInputElement) || !input.checked) return;
-        if (input.name === "btr-native-mode" && ["mainland", "overseas", "custom"].includes(input.value)) {
+        if (input.name === "btr-native-mode" && ["auto", "mainland", "overseas", "custom"].includes(input.value)) {
           root.postMessage({ channel: CHANNEL, type: "settings-update", payload: { mode: input.value } }, "*");
         } else if (input.name === "btr-native-concurrency") {
           if (input.value === "auto") {
@@ -6764,7 +7146,11 @@ const chrome = (() => {
   function takeRetakePosition(route, video) {
     const kept = retakePosition;
     retakePosition = null;
-    return kept && kept.route === route && kept.video === video ? kept.time : undefined;
+    if (!kept || kept.route !== route || kept.video !== video) return undefined;
+    // A native reload may fail while offline. Keep our position until it restores one;
+    // a loaded native video (including a replay at zero) owns its position again.
+    if (kept.handedBack && (video.currentTime > 0 || video.readyState >= 2)) return undefined;
+    return kept.time;
   }
 
   // The player's own "自动开播" switch. Unknown counts as on, as before.
@@ -6798,9 +7184,10 @@ const chrome = (() => {
     // the player knows the intent.
     if (current) resumeHint = { playing: Boolean(current.wantsToPlay ? current.wantsToPlay() : current.video && !current.video.paused), at: Date.now(), handedBack: resumeNative };
     // The compatibility mode leaves the element as it is.
-    if (current) retakePosition = resumeNative || current.nativeTransport ? null : {
+    if (current) retakePosition = current.nativeTransport ? null : {
       route: playerRoute,
       video: current.video,
+      handedBack: resumeNative,
       time: current.playbackPosition ? current.playbackPosition() : Number(current.video?.currentTime) || 0
     };
     notices?.detach(resumeNative ? "已停止加速，交回 B 站原来的连接" : "已停止接管上一个视频");
@@ -7300,8 +7687,8 @@ const chrome = (() => {
     const preferredQuality = nativeQuality();
     const preferredCodec = nativeCodec();
     const preferredAudio = nativeAudio();
-    const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
     const retakeTime = takeRetakePosition(route, container.querySelector("video"));
+    const resumeAfterStop = takeResumeHint(retakeTime !== undefined || (autoRetakeRoute === route && autoRetakeCount > 0));
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
@@ -7439,7 +7826,7 @@ const chrome = (() => {
       syncFrameWatch();
       const serversChanged = settings.mode === "custom" && previous.customHosts.join(",") !== settings.customHosts.join(",");
       if (!hadLoadedSettings || previous.enabled !== settings.enabled || previous.takeover !== settings.takeover || previous.mode !== settings.mode || previous.concurrency !== settings.concurrency || previous.autoConcurrency !== settings.autoConcurrency || serversChanged) {
-        const cdn = settings.mode === "overseas" ? "海外 CDN"
+        const cdn = settings.mode === "auto" ? "自动优选 CDN" : settings.mode === "overseas" ? "海外 CDN"
           : settings.mode !== "custom" ? "大陆 CDN"
             : settings.customHosts.length ? `自定义的 ${settings.customHosts.length} 个服务器` : "大陆 CDN（自定义里还没选服务器）";
         const threads = settings.autoConcurrency ? `线程数自动调整（当前 ${autoThreads?.threads() || 8}，8 到 64）` : `开启 ${settings.concurrency} 条下载线程`;
@@ -7565,7 +7952,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.30.1"
+      version: "2026.11.2.1"
     })
   });
   publish();
@@ -7819,7 +8206,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.30.1",
+    version: "2026.11.2.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8287,7 +8674,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.30.1"
+      version: "2026.11.2.1"
     })
   });
   publish();
@@ -8610,7 +8997,7 @@ const chrome = (() => {
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "auto", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false, debugNotices: false, errorNotices: false, debugCategories: {} };
   // Settings of the old ArtPlayer version, of the compatibility modes removed before today's
   // 兼容模式 (that one is `takeover`), and the flag of the first-run guide that 0.9.4.2 removed.
   const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
@@ -8630,11 +9017,12 @@ const chrome = (() => {
       blockInternational: input?.blockInternational === true,
       bufferAheadSeconds: [30, 45, 90, 180].includes(Number(input?.bufferAheadSeconds)) ? Number(input.bufferAheadSeconds) : 45,
       secondaryBuffer: input?.secondaryBuffer === true,
+      progressiveMedia: input?.progressiveMedia === true,
       theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
       takeover: input?.takeover === "compat" ? "compat" : "full",
-      mode: ["overseas", "custom"].includes(input?.mode) ? input.mode : "mainland",
+      mode: ["auto", "mainland", "overseas", "custom"].includes(input?.mode) ? input.mode : "auto",
       customHosts: (Array.isArray(input?.customHosts) ? input.customHosts : [])
         .map((host) => String(host).trim().toLowerCase())
         .filter((host, index, all) => /^[a-z\d](?:[a-z\d.-]{0,251}[a-z\d])?$/.test(host) && all.indexOf(host) === index)
@@ -8642,6 +9030,7 @@ const chrome = (() => {
       floatingButton: input?.floatingButton !== false,
       floatingButtonLeft: input?.floatingButtonLeft != null && Number(input.floatingButtonLeft) >= 0 && Number(input.floatingButtonLeft) <= 1 ? Number(input.floatingButtonLeft) : null,
       floatingButtonTop: input?.floatingButtonTop != null && Number(input.floatingButtonTop) >= 0 && Number(input.floatingButtonTop) <= 1 ? Number(input.floatingButtonTop) : null,
+      guideDone: input?.guideDone === true,
       debugNotices: input?.debugNotices === true,
       errorNotices: input?.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, input?.debugCategories?.[key] !== false]))
@@ -8871,6 +9260,10 @@ const chrome = (() => {
       if (!keys.length) return;
       const next = normalizeStoredSettings({ ...latestSettings, ...Object.fromEntries(keys.map((key) => [key, input[key]])) });
       chrome.storage.sync.set(Object.fromEntries(keys.map((key) => [key, next[key]])));
+      return;
+    }
+    if (event.data.type === "settings-reset") {
+      chrome.storage.sync.set(DEFAULTS);
       return;
     }
     if (event.data.type !== "stats") return;

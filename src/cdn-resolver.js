@@ -80,7 +80,7 @@
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index);
     const custom = customServers(mode, customHosts);
-    const hosts = custom.length ? custom : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
+    const hosts = custom.length ? custom : mode === "auto" ? [...OVERSEAS_HOSTS.slice(0, 2), ...MAINLAND_HOSTS, ...OVERSEAS_HOSTS.slice(2)] : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
     // A relay address moved to an ordinary node is refused there, so only ordinary addresses
     // are moved to the other nodes.
     const ordinary = originals.filter((url) => !isRelayUrl(url));
@@ -99,6 +99,7 @@
       .filter(Boolean);
     const allowedOriginals = custom.length
       ? originals.filter((url) => custom.includes(hostOf(url)))
+      : mode === "auto" ? ordinary
       : mode === "overseas"
         ? originals.filter((url) => !MAINLAND_HOSTS.includes(hostOf(url)))
         : originals.filter((url) => MAINLAND_HOSTS.includes(hostOf(url)));
@@ -198,6 +199,10 @@
   // that was left out for being slow goes back to the untested ones after this, and gets
   // another try through the exploration slot.
   const MEASUREMENT_TTL_MS = 90000;
+  // Host priors contain no addresses or signatures and are only hints in Auto mode.
+  // A different file still has to prove it can be served; failures remain file-local.
+  const hostPriors = new Map();
+  root.addEventListener?.("online", () => hostPriors.clear());
 
   function createResolver(representation, getMode, bans = null, getCustomHosts = null) {
     const health = new Map();
@@ -218,7 +223,15 @@
       }
       return key;
     };
-    const measurement = (url) => routes.get(routeOf(url)) || null;
+    const measurement = (url) => {
+      const local = routes.get(routeOf(url));
+      if (getMode?.() !== "auto") return local || null;
+      const prior = hostPriors.get(hostOf(url));
+      const fresh = prior && Date.now() - prior.at < MEASUREMENT_TTL_MS;
+      return { ...(fresh ? prior : {}), ...local,
+        bps: local?.bps || (fresh ? prior.bps * 0.7 : 0),
+        lastMeasuredAt: local?.lastMeasuredAt || (fresh ? prior.lastMeasuredAt : 0) };
+    };
     // Only a transfer long enough to measure a speed renews it. The short tail of a resumed
     // piece proves the node works, and must not keep an old speed alive for ever.
     const measuredNow = (url, now = Date.now()) => {
@@ -230,6 +243,15 @@
       const bm = measurement(b) || {};
       return Number(Boolean(bm.lastSuccessAt)) - Number(Boolean(am.lastSuccessAt)) || (bm.bps || 0) - (am.bps || 0);
     };
+    const completionMs = (url, bytes) => {
+      const item = measurement(url) || {};
+      const latency = item.firstByteMs || 500;
+      const rate = measuredNow(url) ? (item.bodyBps || item.bps) : 0;
+      return latency + (rate > 0 ? bytes * 1000 / rate : 2000)
+        + (item.jitterMs || 0) + (health.get(url)?.failures || 0) * 500;
+    };
+    const rank = (bytes) => getMode?.() === "auto"
+      ? (a, b) => completionMs(a, bytes) - completionMs(b, bytes) : bySpeed;
     let cursor = 0;
     let mediaRangeCount = 0;
     let rangeCursor = 0;
@@ -262,16 +284,17 @@
       return rotated;
     }
 
-    function rangeCandidates() {
+    function rangeCandidates(bytes = 512 * 1024) {
       const now = Date.now();
       const pool = urls()
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now)
-        .sort(bySpeed);
+        .sort(rank(bytes));
       if (!pool.length) return urls();
       const firstRange = mediaRangeCount === 0;
-      const width = Math.min(firstRange ? pool.length : 6, pool.length);
+      const automatic = getMode?.() === "auto";
+      const width = Math.min(automatic ? 4 : firstRange ? pool.length : 6, pool.length);
       let selected;
-      const warmupRanges = getMode?.() === "mainland" ? 1 : 4;
+      const warmupRanges = automatic || getMode?.() === "mainland" ? 1 : 4;
       if (mediaRangeCount < warmupRanges) {
         selected = pool.slice(0, width);
         rangeCursor = width % pool.length;
@@ -285,11 +308,11 @@
         // finding the good nodes quickly costs little.
         const measured = pool.filter((url) => measuredNow(url, now));
         const rest = pool.filter((url) => !measuredNow(url, now));
-        const places = Math.min(rest.length, Math.max(1, width - measured.length));
+        const places = Math.min(rest.length, automatic ? 1 : Math.max(1, width - measured.length));
         const explore = Array.from({ length: places }, (_item, index) => rest[(rangeCursor + index) % rest.length]);
         rangeCursor = (rangeCursor + places) % Math.max(1, pool.length);
         selected = [...measured.slice(0, width - explore.length), ...explore];
-        for (const url of pool) {
+        for (const url of automatic ? [] : pool) {
           if (selected.length >= Math.min(3, pool.length)) break;
           if (!selected.includes(url)) selected.push(url);
         }
@@ -310,29 +333,39 @@
       const candidates = unbanned([...originals, ...allUrls()]
         .filter((url, index, all) => all.indexOf(url) === index))
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now);
-      return candidates.slice(0, 8);
+      return (getMode?.() === "auto" ? candidates.sort(rank(8192)) : candidates).slice(0, 8);
     }
 
     function rescueCandidates() {
       const now = Date.now();
       return urls()
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now)
-        .sort(bySpeed);
+        .sort(rank(128 * 1024));
     }
 
-    function success(url, bps) {
+    function success(url, bps, timing = {}) {
       bans?.success?.(url);
       const old = measurement(url) || {};
       const now = Date.now();
       const measured = bps > 0;
       health.set(url, { failures: 0, blockedUntil: 0, lastSuccessAt: now });
       routes.set(routeOf(url), {
+        ...old,
         lastSuccessAt: now,
         // No speed comes with a transfer too short to measure one; the last one stays, and
         // keeps its age.
         lastMeasuredAt: measured ? now : old.lastMeasuredAt || 0,
-        bps: !measured ? old.bps || 0 : old.bps ? old.bps * 0.65 + bps * 0.35 : bps
+        bps: !measured ? old.bps || 0 : old.bps ? old.bps * 0.65 + bps * 0.35 : bps,
+        firstByteMs: timing.firstByteMs > 0 ? old.firstByteMs ? old.firstByteMs * 0.65 + timing.firstByteMs * 0.35 : timing.firstByteMs : old.firstByteMs || 0,
+        jitterMs: timing.firstByteMs > 0 && old.firstByteMs ? (old.jitterMs || 0) * 0.65 + Math.abs(timing.firstByteMs - old.firstByteMs) * 0.35 : old.jitterMs || 0,
+        bodyBps: timing.bodyBps > 0 ? old.bodyBps ? old.bodyBps * 0.65 + timing.bodyBps * 0.35 : timing.bodyBps : old.bodyBps || 0
       });
+      if (getMode?.() === "auto") {
+        if (hostPriors.size >= 64) hostPriors.delete(hostPriors.keys().next().value);
+        const item = routes.get(routeOf(url));
+        hostPriors.set(hostOf(url), { at: now, bps: item.bps, firstByteMs: item.firstByteMs,
+          bodyBps: item.bodyBps, jitterMs: item.jitterMs, lastMeasuredAt: item.lastMeasuredAt });
+      }
     }
 
     // The speed of a transfer that was cut off before its end. It says how fast the node is
@@ -341,6 +374,7 @@
       if (!(bps > 0)) return;
       const old = measurement(url) || {};
       routes.set(routeOf(url), {
+        ...old,
         lastSuccessAt: old.lastSuccessAt || 0,
         lastMeasuredAt: Date.now(),
         bps: old.bps ? old.bps * 0.65 + bps * 0.35 : bps
@@ -370,7 +404,9 @@
         return {
           host: new URL(url).hostname,
           state: nodeBanned ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : measurement(url)?.lastSuccessAt ? "healthy" : "untested",
-          bps: measurement(url)?.bps || 0
+          bps: speed(url),
+          firstByteMs: Math.round(measurement(url)?.firstByteMs || 0),
+          jitterMs: Math.round(measurement(url)?.jitterMs || 0)
         };
       });
     }

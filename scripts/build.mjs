@@ -30,7 +30,7 @@ const PLACEHOLDER = "__BTR_VERSION__";
 const CHANNEL_PLACEHOLDER = "__BTR_CHANNEL__";
 
 // Where the Canary file is served from, in the repository it is published in.
-export function canaryUrl(repository = "MrTangLuyao/Bilibili-thread-ripper") {
+export function canaryUrl(repository = "salileoss/Bilibili-thread-ripper") {
   return `https://raw.githubusercontent.com/${repository}/main/${CANARY_OUTPUT}`;
 }
 

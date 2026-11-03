@@ -21,6 +21,8 @@ const { chromium } = require("playwright");
     ["info-panel-test.html", "info-panel-result"],
     ["fast-takeover-test.html", "fast-takeover-result"],
     ["buffer-window-test.html", "buffer-window-result"],
+    ["buffer-window-test.html?rate2", "buffer-window-result"],
+    ["buffer-window-test.html?progressive", "buffer-window-result"],
     ["buffer-window-test.html?ui-timeout", "buffer-window-result"],
     ["autoplay-choice-test.html", "autoplay-choice-result"],
     ["playback-state-test.html", "playback-state-result"],

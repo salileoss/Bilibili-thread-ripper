@@ -6,6 +6,10 @@
   const SEGMENT_SECONDS = 2;
   const SEGMENT_COUNT = 80;
   const video = document.querySelector("video");
+  const query = new URLSearchParams(location.search);
+  const playbackRate = query.has("rate2") ? 2 : 1;
+  const progressive = query.has("progressive");
+  video.playbackRate = playbackRate;
   const timeOf = new WeakMap();
   const removals = { video: 0, audio: 0 };
   const started = {};
@@ -115,6 +119,10 @@
         await new Promise((resolve) => setTimeout(resolve, [30, 60, 120][range.index % 3]));
         if (options.signal?.aborted) throw new DOMException("aborted", "AbortError");
         timeOf.set(bytes, range);
+        if (options.onOrderedChunk) {
+          await options.onOrderedChunk(bytes);
+          return { bytes: null, byteLength: range.length, pieceCount: 1, streamed: true, total: null, hosts: [] };
+        }
         return { bytes, byteLength: range.length, pieceCount: 1, streamed: false, total: null, hosts: [] };
       }
     })
@@ -137,7 +145,7 @@
       playinfo: { data: { dash: { duration: SEGMENT_COUNT * SEGMENT_SECONDS, video: [representation(80, "video/mp4", "avc1.640028", 2000000)], audio: [representation(30280, "audio/mp4", "mp4a.40.2", 128000)] } } },
       initialTime: 0,
       initialResume: false,
-      getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 32, autoConcurrency: true }),
+      getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 32, autoConcurrency: true, progressiveMedia: progressive }),
       isNativeUiReady: () => nativeUiReady,
       nativeFetch: () => Promise.reject(new Error("no network in this test")),
       onState(next) { state = next; },
@@ -159,6 +167,7 @@
     const deadline = performance.now() + 8000;
     while (performance.now() < deadline && !(state?.bufferedAhead >= 44)) await sleep(25);
     const filledAhead = state?.bufferedAhead || 0;
+    const rateAwareBuffer = Math.abs(player.getDebug().playableWallSeconds - filledAhead / playbackRate) < 0.1;
     // A control overlay disappearing later must not reapply the first-load budget.
     nativeUiReady = false;
 
@@ -219,12 +228,13 @@
     output.ownsFiles = ownsFiles;
     output.limitedUntilUiReady = limitedUntilUiReady;
     output.uiBudgetReleased = player.getDebug().uiBufferLimit === 0;
+    output.rateAwareBuffer = rateAwareBuffer;
     output.filled = filledAhead >= 44;
     output.keptWindowFull = lateStarts.length === 0;
     output.prunedOncePerStep = removalsAfterJump.video === 1 && removalsAfterJump.audio === 1
       && removalsAfterSmallStep.video === 1 && removalsAfterSmallStep.audio === 1
       && removalsAfterLargeStep.video === 2 && removalsAfterLargeStep.audio === 2;
-    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders && pausedBeforeUnderflow && resumedAfterRefill && ownsFiles && limitedUntilUiReady && output.uiBudgetReleased;
+    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders && pausedBeforeUnderflow && resumedAfterRefill && ownsFiles && limitedUntilUiReady && output.uiBudgetReleased && rateAwareBuffer;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   };

@@ -134,7 +134,7 @@
       && output.debugVersion === "__BTR_VERSION__"
       && output.settingsPanelCount === 1
       && output.settingsStrategy === "native-ui-progressive-mse-0.8-core"
-      && output.cdnOptions.join(",") === "mainland,overseas,custom";
+      && output.cdnOptions.join(",") === "auto,mainland,overseas,custom";
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   }, 50);

@@ -831,7 +831,13 @@
   function preconnectCdnNodes(route) {
     const factory = root.__BILI_CDN_RESOLVER_FACTORY__;
     const custom = settings.mode === "custom" ? settings.customHosts : [];
-    const hosts = custom.length ? custom : settings.mode === "overseas" ? factory?.OVERSEAS_HOSTS : factory?.MAINLAND_HOSTS;
+    const info = currentPlayinfo(routeIdentity());
+    const originals = (info?.data || info?.result || info)?.dash?.video || [];
+    const hosts = custom.length ? custom : settings.mode === "auto"
+      ? [...new Set([...originals.slice(0, 1).flatMap(item => [item.baseUrl || item.base_url, ...[].concat(item.backupUrl || item.backup_url || [])])
+        .filter(Boolean).map(value => { try { return new URL(value).hostname; } catch (_error) { return ""; } }).filter(host => core.normalizeCdnHost?.(host)),
+        ...(factory?.OVERSEAS_HOSTS || []).slice(0, 2), ...(factory?.MAINLAND_HOSTS || []).slice(0, 1)])].filter(Boolean).slice(0, 3)
+      : settings.mode === "overseas" ? factory?.OVERSEAS_HOSTS : factory?.MAINLAND_HOSTS;
     const key = `${settings.mode}:${custom.join(",")}:${route}`;
     if (preconnectKey === key) return;
     const parent = document.head || document.documentElement;
@@ -916,6 +922,7 @@
       panel.dataset.btrStrategy = "native-ui-progressive-mse-0.8-core";
       panel.append(
         settingGroup("线程撕裂者 CDN", "btr-native-mode", [
+          { label: "自动优选", value: "auto" },
           { label: "大陆 CDN", value: "mainland" },
           { label: "海外 CDN", value: "overseas" },
           { label: "自定义", value: "custom" }
@@ -925,7 +932,7 @@
       panel.addEventListener("change", (event) => {
         const input = event.target;
         if (!(input instanceof HTMLInputElement) || !input.checked) return;
-        if (input.name === "btr-native-mode" && ["mainland", "overseas", "custom"].includes(input.value)) {
+        if (input.name === "btr-native-mode" && ["auto", "mainland", "overseas", "custom"].includes(input.value)) {
           root.postMessage({ channel: CHANNEL, type: "settings-update", payload: { mode: input.value } }, "*");
         } else if (input.name === "btr-native-concurrency") {
           if (input.value === "auto") {
@@ -1665,7 +1672,7 @@
       syncFrameWatch();
       const serversChanged = settings.mode === "custom" && previous.customHosts.join(",") !== settings.customHosts.join(",");
       if (!hadLoadedSettings || previous.enabled !== settings.enabled || previous.takeover !== settings.takeover || previous.mode !== settings.mode || previous.concurrency !== settings.concurrency || previous.autoConcurrency !== settings.autoConcurrency || serversChanged) {
-        const cdn = settings.mode === "overseas" ? "海外 CDN"
+        const cdn = settings.mode === "auto" ? "自动优选 CDN" : settings.mode === "overseas" ? "海外 CDN"
           : settings.mode !== "custom" ? "大陆 CDN"
             : settings.customHosts.length ? `自定义的 ${settings.customHosts.length} 个服务器` : "大陆 CDN（自定义里还没选服务器）";
         const threads = settings.autoConcurrency ? `线程数自动调整（当前 ${autoThreads?.threads() || 8}，8 到 64）` : `开启 ${settings.concurrency} 条下载线程`;

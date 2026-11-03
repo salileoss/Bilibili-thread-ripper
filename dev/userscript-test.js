@@ -15,8 +15,8 @@ const version = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8").match(/
 const published = fs.readFileSync(path.join(root, "user_scripts/bilibili-thread-ripper.user.js"), "utf8");
 let script = "";
 let canaryScript = "";
-const scriptUrl = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js";
-const canaryScriptUrl = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/canary/bilibili-thread-ripper-canary.user.js";
+const scriptUrl = "https://raw.githubusercontent.com/salileoss/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js";
+const canaryScriptUrl = "https://raw.githubusercontent.com/salileoss/Bilibili-thread-ripper/main/canary/bilibili-thread-ripper-canary.user.js";
 const source = (file, channel = "stable") => fs.readFileSync(path.join(root, file), "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trimEnd()
   .split("__BTR_VERSION__").join(version).split("__BTR_CHANNEL__").join(channel);
 
@@ -65,7 +65,7 @@ function checkFile() {
 function checkCanary() {
   const header = canaryScript.slice(0, canaryScript.indexOf("// ==/UserScript=="));
   const values = name => [...header.matchAll(new RegExp(`^// @${name}\\s+(.+)$`, "gm"))].map(match => match[1].trim());
-  assert.deepEqual(values("name"), ["Bilibili 线程撕裂者 Canary"]);
+  assert.deepEqual(values("name"), ["BTR West Coast Canary"]);
   assert.deepEqual(values("namespace"), [meta.header.find(([key]) => key === "namespace")[1]]);
   assert.deepEqual(values("version"), [version]);
   assert.deepEqual(values("updateURL"), [canaryScriptUrl]);
@@ -143,7 +143,7 @@ async function showMain(panel) {
     await page.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().concurrency === 8);
     assert.equal(await page.locator("#__bilibili_thread_ripper_onboarding__").count(), 0);
     const settings = await settingsOf(page);
-    assert.deepEqual([settings.enabled, settings.mode, settings.concurrency, settings.autoConcurrency, settings.errorNotices, settings.debugNotices], [true, "mainland", 8, true, false, false]);
+    assert.deepEqual([settings.enabled, settings.mode, settings.concurrency, settings.autoConcurrency, settings.errorNotices, settings.debugNotices], [true, "auto", 8, true, false, false]);
     // The button in the page corner opens the panel, and closes it again.
     const launcherButton = page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher");
     await launcherButton.waitFor();
@@ -160,7 +160,7 @@ async function showMain(panel) {
     const menu = page.locator("#__bilibili_thread_ripper_native_settings__");
     await menu.waitFor({ state: "attached" });
     assert.deepEqual(await menu.locator(".btr-native-setting-title").allTextContents(), ["线程撕裂者 CDN", "并发线程"]);
-    assert.deepEqual(await menu.locator('input[name="btr-native-mode"]').evaluateAll(nodes => nodes.map(node => node.value)), ["mainland", "overseas", "custom"]);
+    assert.deepEqual(await menu.locator('input[name="btr-native-mode"]').evaluateAll(nodes => nodes.map(node => node.value)), ["auto", "mainland", "overseas", "custom"]);
     assert.equal(await menu.evaluate(node => getComputedStyle(node).userSelect), "none");
     console.log("PASS 不再弹欢迎设置；页面角落的悬浮按钮能打开设置；播放器菜单里的设置项齐全");
 
@@ -237,7 +237,7 @@ async function showMain(panel) {
     await panel.locator("#episode-enabled").setChecked(true, { force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().episodeEnabled === true);
     assert.equal(await panel.locator('input[name="mode"][value="mainland"]').isChecked(), true);
-    assert.equal(await panel.locator('input[name="mode"]').count(), 3);
+    assert.equal(await panel.locator('input[name="mode"]').count(), 4);
     assert.equal(await panel.locator("#custom-hosts").isVisible(), false);
     // The takeover switch sits where the old compatibility modes were, full takeover by
     // default, with the note for Safari users under it.
@@ -278,7 +278,7 @@ async function showMain(panel) {
     await page.locator(".mode").first().waitFor();
     // The GitHub mark next to the title opens the project in a new tab.
     const github = panel.locator("#github-link");
-    assert.deepEqual([await github.getAttribute("href"), await github.getAttribute("target")], ["https://github.com/MrTangLuyao/Bilibili-thread-ripper", "_blank"]);
+    assert.deepEqual([await github.getAttribute("href"), await github.getAttribute("target")], ["https://github.com/salileoss/Bilibili-thread-ripper", "_blank"]);
     assert.equal(await panel.locator("h1").textContent(), "线程撕裂者");
     // With Debug on, "复制诊断信息" copies what a bug report needs, without signed addresses.
     await page.evaluate(() => {
@@ -436,9 +436,9 @@ async function showMain(panel) {
     // An empty manager ignores a previous manager's local copy and starts with defaults.
     const space = await managerTab({ mode: "overseas", autoConcurrency: false, concurrency: 16 });
     await space.goto(`${origin}?gm=live`);
-    await modeOf(space, "mainland");
-    await space.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").mode === "mainland");
-    assert.equal(JSON.parse(gmStore.get("sync")).mode, "mainland");
+    await modeOf(space, "auto");
+    await space.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").mode === "auto");
+    assert.equal(JSON.parse(gmStore.get("sync")).mode, "auto");
     // Existing settings in this manager still win over a stale local copy.
     gmStores.get("1").set("sync", JSON.stringify({ mode: "overseas", autoConcurrency: false, concurrency: 16 }));
     await space.goto(`${origin}?gm=live`);
@@ -496,9 +496,9 @@ async function showMain(panel) {
     await spacePanel.locator('input[name="mode"][value="custom"]').check({ force: true });
     await modeOf(video, "custom");
     await video.goto(`${origin}?gm=live&gmstore=2`);
-    await modeOf(video, "mainland");
-    await video.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").mode === "mainland");
-    assert.equal(JSON.parse(gmStores.get("2").get("sync")).mode, "mainland");
+    await modeOf(video, "auto");
+    await video.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").mode === "auto");
+    assert.equal(JSON.parse(gmStores.get("2").get("sync")).mode, "auto");
     await video.goto(`${origin}?gm=live`);
     await modeOf(video, "custom");
     assert.equal(JSON.parse(gmStores.get("1").get("sync")).mode, "custom");

@@ -157,6 +157,32 @@
     return String(representation?.baseUrl || representation?.base_url || "");
   }
 
+  // Probe only alternatives at the same quality; explicit codec choices always win.
+  async function smoothRepresentation(playinfo, selected, preferredCodec = "", decode = null) {
+    const capability = decode || root.navigator?.mediaCapabilities?.decodingInfo?.bind(root.navigator.mediaCapabilities);
+    if (preferredCodec || !capability) return selected;
+    const alternatives = (dashBody(playinfo)?.dash?.video || []).filter(item => Number(item.id) === Number(selected.id) && supported(item, "video"));
+    if (alternatives.length < 2) return selected;
+    let timer;
+    try {
+      const results = await Promise.race([
+        Promise.all(alternatives.map(async item => {
+          try {
+            const hint = await capability({ type: "media-source", video: { contentType: mimeFor(item, "video"),
+              width: Number(item.width), height: Number(item.height), bitrate: Number(item.bandwidth), framerate: frameRate(item) } });
+            return { item, hint };
+          } catch (_error) { return { item, hint: null }; }
+        })),
+        new Promise(resolve => { timer = setTimeout(() => resolve(null), 250); })
+      ]);
+      const current = results?.find(result => result.item === selected || sameRepresentation(result.item, selected));
+      if (!current?.hint || (current.hint.supported !== false && current.hint.smooth !== false)) return selected;
+      return results.filter(result => result.hint?.supported && result.hint.smooth)
+        .sort((a, b) => Number(b.hint.powerEfficient) - Number(a.hint.powerEfficient)
+          || codecPriority(b.item) - codecPriority(a.item))[0]?.item || selected;
+    } finally { clearTimeout(timer); }
+  }
+
   // The file without its node and signature: a refreshed playinfo names the same file again.
   function representationPath(representation) {
     try { return new URL(representationUrl(representation)).pathname; }
@@ -227,9 +253,11 @@
     catch (_error) { return fallback; }
   }
 
-  function mediaBytesPerSecond(track) {
-    const segment = track?.sidx?.segments?.[track.startupIndex];
-    if (segment?.durationSeconds > 0 && segment?.length > 0) return segment.length / segment.durationSeconds;
+  function mediaBytesPerSecond(track, time = null) {
+    const segments = track?.sidx?.segments || [];
+    const index = time === null ? track.startupIndex : sidxTools.segmentIndexAt(segments, time);
+    const upcoming = segments.slice(index, index + 3).filter(item => item.durationSeconds > 0 && item.length > 0);
+    if (upcoming.length) return Math.max(...upcoming.map(item => item.length / item.durationSeconds));
     return Math.max(0, Number(track?.representation?.bandwidth) || 0) / 8;
   }
 
@@ -392,6 +420,7 @@
     let sessionStarts = 0;
     let sessionRequests = 0;
     let session = null;
+    let pendingStart = null;
     let destroyed = false;
     let nativeUiReady = typeof options.isNativeUiReady !== "function";
     let uiBufferLimit = 0;
@@ -421,6 +450,31 @@
     // switch back to an earlier quality or codec). Asking for them again cost every such
     // start a round trip to the CDN before any media could be requested.
     const trackHeaders = new Map();
+    const playbackMetrics = { startupReadyMs: null, firstFrameMs: null, seekToFrameMs: null,
+      networkStalls: 0, networkStallMs: 0, dataHoldAt: null };
+    const rate = () => Math.max(0.25, Math.abs(Number(video.playbackRate) || 1));
+    function endDataHold() {
+      if (playbackMetrics.dataHoldAt === null) return;
+      playbackMetrics.networkStallMs += performance.now() - playbackMetrics.dataHoldAt;
+      playbackMetrics.dataHoldAt = null;
+    }
+    function beginDataHold(candidate) {
+      if (!candidate.playbackActivated || !candidate.resumeWanted || video.seeking || video.ended || playbackMetrics.dataHoldAt !== null) return;
+      playbackMetrics.networkStalls += 1;
+      playbackMetrics.dataHoldAt = performance.now();
+    }
+    function watchPresentedFrame(candidate, seeking = false) {
+      if (typeof video.requestVideoFrameCallback !== "function") return;
+      if (candidate.frameCallbackId != null) video.cancelVideoFrameCallback?.(candidate.frameCallbackId);
+      const began = seeking ? performance.now() : candidate.sessionStartedAt;
+      candidate.frameCallbackId = video.requestVideoFrameCallback(() => {
+        candidate.frameCallbackId = null;
+        if (!sessionIsCurrent(candidate)) return;
+        const elapsed = Math.round(performance.now() - began);
+        if (seeking) playbackMetrics.seekToFrameMs = elapsed;
+        else if (playbackMetrics.firstFrameMs === null) playbackMetrics.firstFrameMs = elapsed;
+      });
+    }
     const timeline = [];
     function note(what, detail = "") {
       timeline.push({ at: Math.round(performance.now()), time: Math.round((Number(video.currentTime) || 0) * 10) / 10, what, detail: String(detail) });
@@ -517,6 +571,7 @@
           const shown = readsAsPlaying();
           session.resumeWanted = false;
           session.viewerPaused = true;
+          endDataHold();
           if (shown) video.dispatchEvent(new Event("pause"));
         }
       });
@@ -566,6 +621,8 @@
         startupThroughputBps: session?.startupThroughputBps || 0,
         mediaBytesPerSecond: session?.mediaBytesPerSecond || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
+        usefulThroughputBps: downloader.getDiagnostics?.().usefulBps || 0,
+        playbackDemandBps: session?.tracks?.reduce((sum, track) => sum + mediaBytesPerSecond(track, current), 0) * rate() || 0,
         cdnHosts: health,
         ...extra
       });
@@ -742,17 +799,18 @@
     // check with the same bytes over a longer time, so the longer the player waited for its
     // target, the slower the network looked and the further the target moved away.
     function updateStartupProfile(candidate) {
-      if (candidate.startupProfiled) return candidate.startupTargetSeconds;
+      if (candidate.startupProfiled) return candidate.startupTargetSeconds = candidate.startupWallSeconds * rate();
       candidate.startupProfiled = candidate.tracks.length > 0 && candidate.tracks.every((track) => track.startupComplete);
       const elapsedSeconds = Math.max(0.25, (performance.now() - candidate.startupStartedAt) / 1000);
       const throughput = candidate.startupCompletedBytes / elapsedSeconds;
-      const required = candidate.tracks.reduce((sum, track) => sum + mediaBytesPerSecond(track), 0);
+      const required = candidate.tracks.reduce((sum, track) => sum + mediaBytesPerSecond(track), 0) * rate();
       const ratio = required > 0 ? throughput / required : 0;
       let target = ratio >= 3 ? STARTUP_BUFFER_MIN_SECONDS : ratio >= 1.8 ? 4 : ratio >= 1.25 ? 6 : ratio > 0 ? 8 : 6;
       if ((Number(selectedVideo?.height) || 0) >= 2160 && ratio < 1.8) target = Math.max(target, 8);
       candidate.startupThroughputBps = throughput;
       candidate.mediaBytesPerSecond = required;
-      candidate.startupTargetSeconds = Math.max(STARTUP_BUFFER_MIN_SECONDS, Math.min(STARTUP_BUFFER_MAX_SECONDS, target));
+      candidate.startupWallSeconds = Math.max(STARTUP_BUFFER_MIN_SECONDS, Math.min(STARTUP_BUFFER_MAX_SECONDS, target));
+      candidate.startupTargetSeconds = candidate.startupWallSeconds * rate();
       return candidate.startupTargetSeconds;
     }
 
@@ -875,6 +933,9 @@
             projectedEnd = segment.endTime;
             if (track.prefetches.has(index) || track.held?.index === index || alreadyBuffered(track, index)) continue;
             const startup = !track.startupComplete && index === track.startupIndex;
+            const progressive = startup || (core.normalizeSettings(getSettings()).progressiveMedia
+              && offset === 0 && !core.normalizeSettings(getSettings()).secondaryBuffer
+              && bufferedEndAt(track.sourceBuffer, current) - current < 3 * rate());
             track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
               startup,
@@ -885,7 +946,7 @@
               // The first segment is written piece by piece as it arrives. A full buffer here,
               // with next to nothing buffered yet, ends the download and the takeover as it
               // always did; only whole segments further on are kept and written later.
-              onOrderedChunk: startup ? async (bytes) => {
+              onOrderedChunk: progressive ? async (bytes) => {
                 if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) return;
                 candidate.progressiveAppends += 1;
                 await append(candidate, track, bytes, generation);
@@ -1002,6 +1063,7 @@
     // Pauses the element to wait for data. Its "pause" event comes later and only if it was
     // playing; counting those keeps it from being read as the viewer's pause.
     function pauseForData(candidate) {
+      beginDataHold(candidate);
       if (!elementPaused()) candidate.ownPauses += 1;
       pauseElement();
       beginHold(candidate);
@@ -1052,6 +1114,7 @@
       const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || target + required) - target);
       if (Math.min(...ends) - target < Math.max(0.5, Math.min(required, remaining))) return;
       candidate.playbackActivated = true;
+      if (playbackMetrics.startupReadyMs === null) playbackMetrics.startupReadyMs = Math.round(performance.now() - candidate.sessionStartedAt);
       note("ready to play", `needed ${required.toFixed(1)} s buffered`);
       noteSeekSettled();
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
@@ -1095,7 +1158,7 @@
         candidate.recovering = true;
         candidate.resumeWanted = true;
         candidate.playAttempted = false;
-        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
+        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS * rate(), updateStartupProfile(candidate));
         candidate.underflowRebuffers += 1;
         note("rebuffer before underflow", `${ahead.toFixed(2)}s ahead`);
         options.onLog?.("前方缓冲快用完了", "先暂停播放，等声音和画面都备好再一起继续。", "info", "buffer");
@@ -1132,6 +1195,8 @@
 
     function disposeSession(candidate, detach = true) {
       if (!candidate || candidate.disposed) return;
+      endDataHold();
+      if (candidate.frameCallbackId != null) video.cancelVideoFrameCallback?.(candidate.frameCallbackId);
       candidate.disposed = true;
       candidate.generation = ++generationSequence;
       candidate.controller.abort(new DOMException("播放任务已取消", "AbortError"));
@@ -1160,6 +1225,11 @@
       downloaderFactory.autoConcurrency?.newSession();
       if (destroyed) return;
       const request = ++sessionRequests;
+      pendingStart = { ...playbackState, request };
+      if (!preferredCodec && root.navigator?.mediaCapabilities?.decodingInfo) {
+        representation = await smoothRepresentation(currentPlayinfo, representation, preferredCodec);
+        if (destroyed || request !== sessionRequests) return;
+      }
       const settling = nativeSourceSettled(video);
       if (settling) {
         const waitedFrom = performance.now();
@@ -1186,9 +1256,9 @@
         timer: null, endRetryTimer: null, tracks: [], ending: false, streamEnded: false,
         playAttempted: false, playbackActivated: false, playbackActivatedAt: 0,
         recovering: false, recoveryTargetSeconds: STARTUP_RECOVERY_SECONDS, bufferAheadLimit: 0, quotaWaits: 0,
-        startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
+        startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(), sessionStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
-        startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
+        startupTargetSeconds: 6 * rate(), startupWallSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
         startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, takeoverPause: false, holdStartedAt: 0, holdTimer: null,
         // A start that replaces one the viewer paused (a quality switch while it loads) is
         // one the viewer paused too.
@@ -1203,6 +1273,8 @@
       };
       openGeneration(candidate);
       session = candidate;
+      pendingStart = null;
+      watchPresentedFrame(candidate);
       if (previous) disposeSession(previous, false);
       // The start is a wait for data too.
       beginHold(candidate);
@@ -1312,7 +1384,7 @@
       // Once playing, the wait for the new position is the same wait as a rebuffer.
       if (candidate.playbackActivated) {
         candidate.recovering = true;
-        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
+        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS * rate(), updateStartupProfile(candidate));
         candidate.playAttempted = false;
         candidate.seekPending = true;
         pauseForData(candidate);
@@ -1381,7 +1453,19 @@
     }
 
     video.addEventListener("loadedmetadata", () => { if (session) session.metadataAt = performance.now(); }, { signal: eventController.signal });
-    video.addEventListener("seeking", scheduleSeek, { signal: eventController.signal });
+    video.addEventListener("seeking", () => {
+      endDataHold();
+      const previousRequest = seekRequestedAt;
+      scheduleSeek();
+      if (session && seekRequestedAt !== previousRequest) watchPresentedFrame(session, true);
+    }, { signal: eventController.signal });
+    video.addEventListener("ratechange", () => {
+      if (session?.startupProfiled) {
+        updateStartupProfile(session);
+        session.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS * rate(), session.startupTargetSeconds);
+      }
+      ensureBuffer();
+    }, { signal: eventController.signal });
     video.addEventListener("timeupdate", () => {
       ensureBuffer();
       // 自动线程数 watches the buffer ahead of the playhead while playing.
@@ -1389,7 +1473,7 @@
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.tracks.length && core.normalizeSettings(getSettings()).autoConcurrency) {
         const current = Number(video.currentTime) || 0;
         const ahead = Math.max(0, Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current);
-        downloaderFactory.autoConcurrency?.buffer(ahead, !elementPaused() && !video.seeking);
+        downloaderFactory.autoConcurrency?.buffer(ahead / rate(), !elementPaused() && !video.seeking);
       }
     }, { signal: eventController.signal });
     video.addEventListener("waiting", () => {
@@ -1397,12 +1481,13 @@
       note("waiting", candidate?.playbackActivated ? "after start" : "before start");
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated) {
         candidate.startupWaitingEvents += 1;
-        const recoveryTarget = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+        const recoveryTarget = Math.min(STARTUP_BUFFER_MAX_SECONDS * rate(), Math.max(STARTUP_RECOVERY_SECONDS * rate(), updateStartupProfile(candidate) + 2 * rate()));
         // With that much already buffered ahead the element waits for its decoder, not for
         // data: a device that decodes the stream too slowly (#58). Pausing for data ended at
         // once and the element waited again, thousands of times a minute, and more threads do
         // not decode any faster.
         const dataMissing = !waitIsOver(candidate, recoveryTarget);
+        if (!waitIsOver(candidate, rate())) beginDataHold(candidate);
         if (dataMissing && !video.seeking && !elementPaused() && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
         if (seekSettledAt && performance.now() - seekSettledAt < 15000 && !video.seeking) stallsAfterSeek += 1;
         if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking && dataMissing) {
@@ -1433,9 +1518,12 @@
       if (!candidate || !sessionIsCurrent(candidate)) return;
       if (candidate.takeoverPause) candidate.takeoverPause = false;
       else if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
-      else if (changesIntent(candidate)) {
-        candidate.resumeWanted = false;
-        candidate.viewerPaused = true;
+      else {
+        endDataHold();
+        if (changesIntent(candidate)) {
+          candidate.resumeWanted = false;
+          candidate.viewerPaused = true;
+        }
       }
     }, { signal: eventController.signal });
     video.addEventListener("loadstart", () => {
@@ -1443,9 +1531,10 @@
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
-    video.addEventListener("playing", () => note("playing"), { signal: eventController.signal });
+    video.addEventListener("playing", () => { endDataHold(); note("playing"); }, { signal: eventController.signal });
     video.addEventListener("ended", () => {
       endedAt = performance.now();
+      endDataHold();
       publishState({ playerState: "ended", bufferedAhead: 0 });
     }, { signal: eventController.signal });
 
@@ -1454,6 +1543,7 @@
     // the session remembers the intent. Reading video.paused then made a second drag of the
     // progress bar, or a quality change during loading, leave the video paused for good.
     function wantsToPlay() {
+      if (pendingStart && !session?.playbackActivated) return Boolean(pendingStart.resume);
       const candidate = session;
       if (candidate?.externalSourceDetected) return lastSeen.playing;
       if (candidate && sessionIsCurrent(candidate) && (!candidate.playbackActivated || candidate.recovering)) return Boolean(candidate.resumeWanted);
@@ -1463,6 +1553,7 @@
     // Where the viewer is in the video. A session that is still starting has just given the
     // element its source, which reads zero until the session has moved it to its start.
     function playbackPosition() {
+      if (pendingStart && !session?.playbackActivated) return Math.max(0, Number(pendingStart.time) || 0);
       const candidate = session;
       if (candidate?.externalSourceDetected) return lastSeen.time;
       const current = Number(video.currentTime) || 0;
@@ -1684,6 +1775,11 @@
       ownsMediaUrl,
       video,
       getDebug: () => ({
+        transfer: downloader.getDiagnostics?.() || null,
+        performance: { ...playbackMetrics, networkStallMs: Math.round(playbackMetrics.networkStallMs
+          + (playbackMetrics.dataHoldAt === null ? 0 : performance.now() - playbackMetrics.dataHoldAt)) },
+        playableWallSeconds: session?.tracks?.length ? Math.max(0, Math.min(...session.tracks.map(track => bufferedEndAt(track.sourceBuffer, Number(video.currentTime) || 0))) - (Number(video.currentTime) || 0)) / rate() : 0,
+        playbackDemandBps: session?.tracks?.reduce((sum, track) => sum + mediaBytesPerSecond(track, Number(video.currentTime) || 0), 0) * rate() || 0,
         version: "__BTR_VERSION__",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
@@ -1738,5 +1834,5 @@
   installNativeErrorGuard();
   installMediaSourceWatch();
   installCodecFailureGuard();
-  root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = Object.freeze({ createNativePlayer, playbackDeadlineAt, qualityLabel, selectRepresentations });
+  root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = Object.freeze({ createNativePlayer, playbackDeadlineAt, qualityLabel, selectRepresentations, smoothRepresentation });
 })(globalThis);

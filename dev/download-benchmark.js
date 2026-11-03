@@ -124,7 +124,7 @@ function makeNetwork(profiles, linkBps) {
 
 // One track filled like native-mse-player's fillTrack: the first segment alone and written
 // as it arrives, then a sliding window with the player's priorities.
-async function fillTrack(downloader, resolver, track, segmentTimes) {
+async function fillTrack(downloader, resolver, track, segmentTimes, playback) {
   const launch = (index, offset) => {
     const start = index * track.segmentBytes;
     const range = { start, end: start + track.segmentBytes - 1, length: track.segmentBytes };
@@ -135,9 +135,11 @@ async function fillTrack(downloader, resolver, track, segmentTimes) {
       kind: track.kind,
       startup,
       priority: startup ? 120 : Math.max(30, 55 - offset * 5),
+      deadlineAt: () => performance.now() + Math.max(0, index * playback.segmentSeconds - playback.position()) * 1000 / playback.rate,
       onOrderedChunk: startup ? async () => {} : null
     }).then((result) => {
       if ((result.byteLength || result.bytes?.length) !== range.length) throw new Error("segment length mismatch");
+      playback.arrived(track.kind, index);
       if (track.kind === "video") segmentTimes.push(performance.now() - began);
     });
   };
@@ -156,7 +158,8 @@ async function fillTrack(downloader, resolver, track, segmentTimes) {
 
 async function runScenario(build, scenario) {
   const network = makeNetwork(scenario.profiles, scenario.linkBps);
-  const downloader = build.idm.createDownloader({ getSettings: () => ({ concurrency: scenario.concurrency, mode: "mainland" }), nativeFetch: network.nativeFetch });
+  const mode = scenario.mode || "mainland";
+  const downloader = build.idm.createDownloader({ getSettings: () => ({ concurrency: scenario.concurrency, mode }), nativeFetch: network.nativeFetch });
   const bans = build.cdn.createBanList();
   const tracks = [
     { kind: "video", file: "1-1-30080", window: scenario.window || 3, segments: scenario.segments, segmentBytes: scenario.segmentBytes },
@@ -164,20 +167,51 @@ async function runScenario(build, scenario) {
   ];
   const segmentTimes = [];
   const startedAt = performance.now();
+  // Finite contiguous A/V buffer and a moving playhead. Tick on arrivals and deadline reads;
+  // after all media is in, no subsequent network interruption can occur.
+  let updatedAt = startedAt, position = 0, activated = false, startupMs = null, rebufferMs = 0;
+  const received = new Map(tracks.map(track => [track.kind, new Set()]));
+  const ends = new Map(tracks.map(track => [track.kind, 0]));
+  const playback = {
+    rate: scenario.rate || 1, segmentSeconds: scenario.segmentSeconds || 4,
+    position() {
+      const at = performance.now(), elapsed = at - updatedAt;
+      updatedAt = at;
+      const end = Math.min(...ends.values()) * this.segmentSeconds;
+      if (!activated && end >= Math.min(2, this.segmentSeconds)) { activated = true; startupMs = at - startedAt; }
+      else if (activated) {
+        const availableMs = Math.max(0, end - position) * 1000 / this.rate;
+        position += Math.min(elapsed, availableMs) * this.rate / 1000;
+        rebufferMs += Math.max(0, elapsed - availableMs);
+      }
+      return position;
+    },
+    arrived(kind, index) {
+      this.position();
+      received.get(kind).add(index);
+      let end = ends.get(kind);
+      while (received.get(kind).has(end)) end += 1;
+      ends.set(kind, end);
+      this.position();
+    }
+  };
   try {
     await Promise.all(tracks.map((track) => fillTrack(
       downloader,
-      build.cdn.createResolver({ baseUrl: mediaUrl(HOSTS[0], track.file) }, () => "mainland", bans),
+      build.cdn.createResolver({ baseUrl: mediaUrl(scenario.originalHost || HOSTS[0], track.file) }, () => mode, bans),
       track,
-      segmentTimes
+      segmentTimes,
+      playback
     )));
   } finally {
     network.close();
   }
   const wallMs = performance.now() - startedAt;
+  playback.position();
   const payload = tracks.reduce((sum, track) => sum + track.segments * track.segmentBytes, 0);
   return {
     wallMs: Math.round(wallMs),
+    startupMs: Math.round(startupMs || 0), rebufferMs: Math.round(rebufferMs),
     goodputMBps: (payload / MB) / (wallMs / 1000),
     wasteRatio: network.stats.bytesSent / payload - 1,
     requests: network.stats.requests,
@@ -199,6 +233,11 @@ function profilesOf(speedsMB, latencyMs, extra = {}) {
 
 const LINE = 12.5 * MB;
 const SCENARIOS = {
+  "west-1 快速海外原始地址 RTT100": { mode: "auto", originalHost: "upos-sz-mirrorcosov.bilivideo.com",
+    profiles: { ...profilesOf([0.2], 200), "upos-sz-mirrorcosov.bilivideo.com": { latencyMs: 100, bps: 3 * MB }, "upos-sz-mirroraliov.bilivideo.com": { latencyMs: 120, bps: 2 * MB } },
+    concurrency: 16, segments: 5, segmentBytes: 2 * MB, linkBps: LINE },
+  "west-2 共享瓶颈 2倍速": { profiles: profilesOf([4], 200), concurrency: 32, segments: 5, segmentBytes: 2 * MB,
+    segmentSeconds: 2, rate: 2, linkBps: 1 * MB },
   "pool-1 均匀 8×3MB/s RTT150 32线程": { profiles: profilesOf([3], 150), concurrency: 32, segments: 9, segmentBytes: 4 * MB },
   "pool-2 速度差异 0.5~8MB/s 32线程": { profiles: profilesOf([8, 6, 4, 3, 2, 1.5, 1, 0.5], 150), concurrency: 32, segments: 9, segmentBytes: 4 * MB },
   "pool-3 1节点中途停传 32线程": { profiles: profilesOf([3], 150, { stallHost: HOSTS[2] }), concurrency: 32, segments: 9, segmentBytes: 4 * MB },
@@ -223,7 +262,7 @@ const SCENARIOS = {
     }
     console.log(`\n=== ${name} ===`);
     for (const [label, run] of Object.entries(results)) {
-      console.log(`${label.padEnd(8)} wall ${String(run.wallMs).padStart(6)} ms  goodput ${run.goodputMBps.toFixed(2).padStart(6)} MB/s  waste ${(run.wasteRatio * 100).toFixed(1).padStart(5)}%  requests ${String(run.requests).padStart(4)}  first segment ${String(run.firstSegmentMs).padStart(5)} ms  worst ${String(run.maxSegmentMs).padStart(5)} ms  busy nodes ${run.busyHosts.toFixed(1)}  per node ${run.perHost}`);
+      console.log(`${label.padEnd(8)} wall ${String(run.wallMs).padStart(6)} ms  startup ${run.startupMs} ms  rebuffer ${run.rebufferMs} ms  goodput ${run.goodputMBps.toFixed(2).padStart(6)} MB/s  waste ${(run.wasteRatio * 100).toFixed(1).padStart(5)}%  requests ${String(run.requests).padStart(4)}  first segment ${String(run.firstSegmentMs).padStart(5)} ms  worst ${String(run.maxSegmentMs).padStart(5)} ms  busy nodes ${run.busyHosts.toFixed(1)}  per node ${run.perHost}`);
     }
     console.log(`speedup ×${(results.baseline.wallMs / results.current.wallMs).toFixed(2)}`);
   }

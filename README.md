@@ -1,3 +1,19 @@
+# BTR West Coast
+
+Personal performance fork of [MrTangLuyao/Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper), maintained by salileoss. Original credits and MIT license are retained below.
+
+[Install BTR West Coast for Tampermonkey](https://raw.githubusercontent.com/salileoss/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
+
+Disable the original BTR script before enabling this fork. This version has a separate name/namespace and updates from this fork. Existing settings in this fork are preserved during updates; a fresh installation starts with **Auto CDN** and **automatic concurrency**. Originals, overseas and mainland nodes remain eligible throughout playback. Manual mainland, overseas and custom modes remain available.
+
+Start with full takeover and the default 45-second forward buffer. Low-buffer progressive appending and secondary buffering are experimental and remain off by default. Quality remains under your control. Export local diagnostics from the settings panel or `__biliThreadRipperDebug.report()`; the report includes useful delivered bytes, request timings, startup/frame latency, playback demand and network interruptions without signed media URLs.
+
+See the [performance plan and validation notes](docs/west-coast-performance-plan.md). For local development, use Node 24+: `npm run build` and `npm test` (browser tests also need Playwright and a Chromium browser). `BTR_PROBE_REPEATS=3 node dev/network-probe.mjs` validates randomized route samples; `node dev/playback-benchmark.js mainland,overseas,auto` runs serial, anonymous real-media trials. Set `BTR_CHROME_PATH` to an installed Chrome for AAC/H.264 playback. Anonymous tests do not establish logged-in 4K performance.
+
+The following is the upstream project's documentation; its original installation links install upstream BTR. Use the fork installation link above for this version.
+
+---
+
 <div align="center">
 
 <img src="icons/icon-128.png" width="112" alt="线程撕裂者图标">

@@ -27,7 +27,7 @@
   const BUFFER_OPTIONS = [30, 45, 90, 180];
   const MAX_CUSTOM_HOSTS = 32;
   const HOST_GROUPS = [["大陆节点", cdn.MAINLAND_HOSTS], ["海外节点", cdn.OVERSEAS_HOSTS]];
-  const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
+  const PROJECT_URL = "https://github.com/salileoss/Bilibili-thread-ripper";
   // GitHub's mark.
   const GITHUB_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>`;
   // The script's own icon, icons/icon-128.png (dev/userscript-test.js checks the two stay the same).
@@ -146,6 +146,7 @@
             <div class="block" data-needs-enabled>
               <h2 class="block-title">CDN 模式</h2>
               <section class="mode-select" aria-label="CDN 模式">
+                <label><input type="radio" name="mode" value="auto"><span>自动优选</span></label>
                 <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
                 <label><input type="radio" name="mode" value="overseas"><span>海外</span></label>
                 <label><input type="radio" name="mode" value="custom"><span>自定义</span></label>
@@ -188,7 +189,7 @@
             <div class="block" data-needs-enabled>
               <section class="controls buffer-controls" aria-label="缓冲">
                 <div class="control-title">
-                  <label for="buffer-ahead" class="row-text">全接管预缓冲时长<small>可能受到浏览器150MiB限制</small></label>
+                  <label for="buffer-ahead" class="row-text">全接管预缓冲时长<small>受浏览器缓冲容量和内存限制</small></label>
                   <output id="buffer-value" for="buffer-ahead">45s</output>
                 </div>
                 <div class="slider">
@@ -199,6 +200,7 @@
                   <span>30s</span><span>45s</span><span>90s</span><span>180s</span>
                 </div>
                 <label class="auto-row" for="secondary-buffer"><span class="row-text">开启二级缓冲（实验性）<small>尝试绕过浏览器视频缓冲容量限制</small></span><span class="switch"><input id="secondary-buffer" type="checkbox" aria-label="开启二级缓冲（实验性）"><span></span></span></label>
+                <label class="auto-row" for="progressive-media"><span class="row-text">低缓冲渐进写入（实验性）<small>全接管模式下优先写入即将播放的数据，默认关闭。</small></span><span class="switch"><input id="progressive-media" type="checkbox" aria-label="低缓冲渐进写入（实验性）"><span></span></span></label>
               </section>
             </div>
           </div>
@@ -308,7 +310,7 @@
     .switch input:checked + span { background: #fb7299; }
     .switch input:checked + span::after { transform: translateX(18px); }
     .switch input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
-    .mode-select { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    .mode-select { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; padding: 3px; border-radius: 10px; background: var(--surface); }
     .mode-select label { position: relative; }
     .mode-select input { position: absolute; opacity: 0; }
     .mode-select span { display: block; padding: 8px 6px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; text-align: center; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
@@ -667,6 +669,7 @@
     const bufferValue = $("buffer-value");
     const bufferFill = $("buffer-fill");
     const secondaryBuffer = $("secondary-buffer");
+    const progressiveMedia = $("progressive-media");
     const errorNotices = $("error-notices");
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
@@ -764,6 +767,7 @@
       setSlider(settings.concurrency);
       setBufferSlider(settings.bufferAheadSeconds);
       secondaryBuffer.checked = settings.secondaryBuffer === true;
+      progressiveMedia.checked = settings.progressiveMedia === true;
       concurrency.disabled = autoConcurrency.checked;
       concurrency.closest(".controls").classList.toggle("auto", autoConcurrency.checked);
       setMode(settings.mode);
@@ -807,6 +811,7 @@
       save({ bufferAheadSeconds: seconds });
     });
     secondaryBuffer.addEventListener("change", () => save({ secondaryBuffer: secondaryBuffer.checked }));
+    progressiveMedia.addEventListener("change", () => save({ progressiveMedia: progressiveMedia.checked }));
     for (const radio of shadow.querySelectorAll('input[name="mode"]')) {
       radio.addEventListener("change", () => {
         if (!radio.checked) return;

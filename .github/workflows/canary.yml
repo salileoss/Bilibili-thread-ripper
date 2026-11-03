@@ -54,8 +54,8 @@ jobs:
           VERSION: ${{ steps.build.outputs.version }}
         run: |
           git add canary
-          # Under the maintainer's own name and noreply address, not the Actions bot.
-          git -c user.name="LouieTang" -c user.email="65329281+MrTangLuyao@users.noreply.github.com" commit -q -m "canary $VERSION"
+          # Under the fork maintainer's name and noreply address, not the Actions bot.
+          git -c user.name="salileoss" -c user.email="16474210+salileoss@users.noreply.github.com" commit -q -m "canary $VERSION"
           git log -1 --format="作者: %an <%ae>%n提交者: %cn <%ce>%n%B"
           # Three tries; if none of them gets through, the step fails instead of reporting
           # a Canary that was never pushed.

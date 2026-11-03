@@ -70,7 +70,7 @@
   resetButton()?.click();
   resetButton()?.click();
   await wait(200);
-  const resetDone = !panel() && globalThis.__btrTestStorage.syncState.concurrency === 8 && globalThis.__btrTestStorage.syncState.mode === "mainland";
+  const resetDone = !panel() && globalThis.__btrTestStorage.syncState.concurrency === 8 && globalThis.__btrTestStorage.syncState.mode === "auto";
   const resetBringsGuide = Boolean(guideHost()) && globalThis.__btrTestStorage.syncState.guideDone === false && !guideCookie;
   guideRoot()?.querySelector(".btr-guide")?.click();
   await wait(200);

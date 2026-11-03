@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { RELEASE_OUTPUT, VERSION_PATTERN, root } from "./build.mjs";
 
-export const NOTICE = "> [!NOTE]\n> 早期视频里介绍的 Chrome 独立插件版已经停止维护，请不要再安装。安装方法见[安装说明](https://github.com/MrTangLuyao/Bilibili-thread-ripper#-%E5%AE%89%E8%A3%85)。";
+export const NOTICE = "> [!NOTE]\n> BTR West Coast is a personal Tampermonkey fork. Disable upstream BTR before enabling this version. See the [fork installation instructions](https://github.com/salileoss/Bilibili-thread-ripper#btr-west-coast).";
 
 function stop(message) {
   console.error(`发布停止：${message}`);

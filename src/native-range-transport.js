@@ -552,8 +552,12 @@
       if (name !== "timeupdate" && name !== "progress") note(`media ${name}`, `buffer ${bufferedAhead().toFixed(2)}s`);
       if (name === "error") options.onLog?.("B 站播放器出错了", video.error?.message || `媒体错误 ${video.error?.code}`, "error", "playback");
       if (name === "playing") lastError = "";
-      if (name === "timeupdate") sampleQuality();
-      else publish();
+      if (name === "timeupdate") {
+        sampleQuality();
+        if (settings().autoConcurrency) downloaders.autoConcurrency?.buffer(bufferedAhead() / Math.max(0.25, Math.abs(Number(video.playbackRate) || 1)), !video.paused && !video.seeking);
+      }
+      if (name === "waiting" && !video.paused && !video.seeking && bufferedAhead() < 1 && settings().autoConcurrency) downloaders.autoConcurrency?.stall();
+      if (name !== "timeupdate") publish();
     }, { signal: events.signal });
     active = owner;
     note("native transport attached");
@@ -568,7 +572,7 @@
       },
       async updatePlayinfo(playinfo) { update(playinfo); },
       destroy: owner.destroy,
-      getDebug: () => ({ architecture: "native-player-range-transport", transportRevision: 6, qualityGuardRevision: 11, nativeQualityGuard: !!guardedDash,
+      getDebug: () => ({ transfer: owner.downloader.getDiagnostics?.() || null, architecture: "native-player-range-transport", transportRevision: 6, qualityGuardRevision: 11, nativeQualityGuard: !!guardedDash,
         qualityId: Number(qualityState.split("/")[0]) || 0, downloadedQualityId: Number(lastVideo?.id) || 0,
         width: video.videoWidth, height: video.videoHeight, currentTime: Number(video.currentTime) || 0,
         videoType: lastVideo?.mimeType || lastVideo?.mime_type || "", audioType: lastAudio?.mimeType || lastAudio?.mime_type || "",
