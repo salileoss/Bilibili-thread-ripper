@@ -123,6 +123,12 @@ test("published fork bundles exactly match their source and own their update URL
     const text = fs.readFileSync(path.join(root, file), "utf8").replace(/\r\n/g, "\n");
     const version = /^\/\/ @version\s+(\S+)/m.exec(text)[1];
     assert.equal(text, build.buildUserscript(version, { channel }));
-    assert.match(text.slice(0, text.indexOf("// ==/UserScript==")), /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/salileoss\//);
+    const header = text.slice(0, text.indexOf("// ==/UserScript=="));
+    const field = name => [...header.matchAll(new RegExp(`^// @${name}\\s+(.+)$`, "gm"))].map(match => match[1]);
+    assert.deepEqual(field("name"), [channel === "stable" ? "BTR West Coast" : "BTR West Coast Canary"]);
+    assert.deepEqual(field("namespace"), ["https://github.com/salileoss/Bilibili-thread-ripper"]);
+    const url = `https://raw.githubusercontent.com/salileoss/Bilibili-thread-ripper/main/${file}`;
+    assert.deepEqual(field("updateURL"), [url]);
+    assert.deepEqual(field("downloadURL"), [url]);
   }
 });
