@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "repository": "salileoss/Bilibili-thread-ripper",
+  "baseSha": "4cb584c7cb70fc71c352182a8e0e67c5b0beeeec",
+  "baseVersion": "2026.11.2.1",
+  "upstreamSha": "e409a42cbec60d4ceb430dc53d8a7942e07c1d31",
+  "upstreamTag": "2026.11.3.1",
+  "stableVersion": "2026.11.4.1",
+  "canaryVersion": "2026.11.4.1",
+  "reviewRequiredPaths": [
+    "dev/floating-button-test.js"
+  ]
+}

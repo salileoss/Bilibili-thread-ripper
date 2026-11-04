@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BTR West Coast Canary
 // @namespace    https://github.com/salileoss/Bilibili-thread-ripper
-// @version      2026.11.3.3
+// @version      2026.11.4.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao; West Coast fork by salileoss
@@ -4092,7 +4092,7 @@ const chrome = (() => {
           + (playbackMetrics.dataHoldAt === null ? 0 : performance.now() - playbackMetrics.dataHoldAt)) },
         playableWallSeconds: session?.tracks?.length ? Math.max(0, Math.min(...session.tracks.map(track => bufferedEndAt(track.sourceBuffer, Number(video.currentTime) || 0))) - (Number(video.currentTime) || 0)) / rate() : 0,
         playbackDemandBps: session?.tracks?.reduce((sum, track) => sum + mediaBytesPerSecond(track, Number(video.currentTime) || 0), 0) * rate() || 0,
-        version: "2026.11.3.3",
+        version: "2026.11.4.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4994,7 +4994,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.3.3${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.4.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -5389,7 +5389,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.11.3.3",
+        BTR: "2026.11.4.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5416,11 +5416,6 @@ const chrome = (() => {
     return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
   }
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
-  // The panel opens on its main page, or on 高级设置 when it was closed there, for the rest
-  // of this page.
-  let advancedOpen = false;
-  // The tab of 高级设置 last shown, for the rest of this page too.
-  let advancedTab = "network";
 
   function open(options = {}) {
     if (current) return;
@@ -5487,6 +5482,7 @@ const chrome = (() => {
     const enter = (node, from) => {
       if (node && !still()) node.animate([{ opacity: 0, transform: from }, { opacity: 1, transform: "none" }], { duration: 240, easing: EASE });
     };
+    let advancedTab = "network";
     const selectTab = (name) => {
       advancedTab = name;
       for (const tab of tabs) {
@@ -5505,10 +5501,10 @@ const chrome = (() => {
       resize(change);
       enter(panel.querySelector(show ? ".advanced-page" : ".view-main"), show ? "translateX(18px)" : "translateX(-18px)");
     };
-    // "自定义" in the gear menu opens it on the custom servers, under 网络.
-    selectTab(options.advanced === true ? "network" : advancedTab);
-    showAdvanced(advancedOpen || options.advanced === true, false);
-    advanced.addEventListener("toggle", () => { advancedOpen = advanced.open; });
+    // The panel always opens on its first page; "自定义" in the gear menu opens it on the
+    // custom servers, under 网络.
+    selectTab("network");
+    showAdvanced(options.advanced === true, false);
     advanced.querySelector("summary").addEventListener("click", (event) => {
       event.preventDefault();
       showAdvanced(true);
@@ -6234,7 +6230,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.3.3",
+    version: "2026.11.4.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7952,7 +7948,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.11.3.3"
+      version: "2026.11.4.1"
     })
   });
   publish();
@@ -8206,7 +8202,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.3.3",
+    version: "2026.11.4.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8674,7 +8670,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.11.3.3"
+      version: "2026.11.4.1"
     })
   });
   publish();

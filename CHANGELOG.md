@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [2026.11.4.1] - 2026-11-04
+
+### BTR West Coast upstream update
+
+- Integrate [upstream 2026.11.3.1](https://github.com/MrTangLuyao/Bilibili-thread-ripper/releases/tag/2026.11.3.1) (e409a42cbec60d4ceb430dc53d8a7942e07c1d31).
+- Settings reopen on the main page, with Network selected when entering advanced settings.
+- Retain West Coast adaptive routing, conservative buffering defaults, saved settings and fork update URLs.
+- Preserve both upstream and fork release history while resolving the changelog conflict.
+
+## [2026.11.3.1] - 2026-11-03
+
+### 新增
+
+- 新增悬浮球引导页，第一次使用时指出设置入口。
+- 设置面板“功能”页新增“恢复默认设置”。
+
+### 修复
+
+- 全接管下，断网后交回 B 站、B 站也恢复失败时，自动重新接管会从头播放（@KeWu5678，#62）。现在保留断网前的位置；B 站已经恢复播放时，使用它当前的进度。
+
 ## [2026.11.2.1] - 2026-11-02
 
 ### BTR West Coast fork
