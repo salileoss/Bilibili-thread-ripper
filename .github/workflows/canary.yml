@@ -24,7 +24,8 @@ concurrency:
 jobs:
   publish:
     name: 生成 Canary
-    if: github.ref == 'refs/heads/main'
+    # Sync PRs already include a tested Canary. Avoid a main-write bypass of branch rules.
+    if: github.ref == 'refs/heads/main' && (github.repository != 'salileoss/Bilibili-thread-ripper' || vars.CANARY_DIRECT_PUSH == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

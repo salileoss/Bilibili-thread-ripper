@@ -10,6 +10,8 @@ Start with full takeover and the default 45-second forward buffer. Low-buffer pr
 
 See the [performance plan and validation notes](docs/west-coast-performance-plan.md). For local development, use Node 24+: `npm run build` and `npm test` (browser tests also need Playwright and a Chromium browser). `BTR_PROBE_REPEATS=3 node dev/network-probe.mjs` validates randomized route samples; `node dev/playback-benchmark.js mainland,overseas,auto` runs serial, anonymous real-media trials. Set `BTR_CHROME_PATH` to an installed Chrome for AAC/H.264 playback. Anonymous tests do not establish logged-in 4K performance.
 
+The [upstream update workflow](docs/upstream-update-plan.md) checks stable releases daily, prepares and tests a fork update PR, and publishes a newly versioned script after a reviewed merge. Automatic merging is off by default. See the setup instructions before enabling it; `npm run sync:dry-run` checks an update in a disposable clone without pushing changes.
+
 The following is the upstream project's documentation; its original installation links install upstream BTR. Use the fork installation link above for this version.
 
 ---

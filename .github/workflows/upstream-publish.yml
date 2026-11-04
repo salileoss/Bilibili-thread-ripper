@@ -1,0 +1,67 @@
+name: Publish upstream update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - user_scripts/bilibili-thread-ripper.user.js
+      - upstream-sync.json
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact original merge SHA to publish or retry
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-publication
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'salileoss/Bilibili-thread-ripper' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.verify.outputs.publish }}
+      tag: ${{ steps.verify.outputs.tag }}
+      sha: ${{ steps.verify.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Verify ancestry, versions, bundles and release notes without write access
+        id: verify
+        env:
+          RELEASE_SHA: ${{ inputs.commit || github.sha }}
+        run: node scripts/upstream-control.mjs verify-release "$RELEASE_SHA"
+
+  publish:
+    needs: verify
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Create immutable tag and explicitly dispatch Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+        run: node scripts/upstream-control.mjs tag

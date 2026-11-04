@@ -6,6 +6,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "release": "node scripts/release.mjs",
-    "test": "node dev/run-tests.js"
+    "test": "node dev/run-tests.js",
+    "sync:dry-run": "node scripts/upstream-sync.mjs dry-run",
+    "test:upstream": "node --test dev/upstream-sync-test.js"
   }
 }

@@ -144,6 +144,7 @@ async function showMain(panel) {
     assert.equal(await page.locator("#__bilibili_thread_ripper_onboarding__").count(), 0);
     const settings = await settingsOf(page);
     assert.deepEqual([settings.enabled, settings.mode, settings.concurrency, settings.autoConcurrency, settings.errorNotices, settings.debugNotices], [true, "auto", 8, true, false, false]);
+    assert.deepEqual([settings.bufferAheadSeconds, settings.secondaryBuffer, settings.progressiveMedia], [45, false, false]);
     // The button in the page corner opens the panel, and closes it again.
     const launcherButton = page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher");
     await launcherButton.waitFor();
@@ -445,6 +446,16 @@ async function showMain(panel) {
     await modeOf(space, "overseas");
     assert.equal(JSON.parse(gmStore.get("sync")).mode, "overseas");
     assert.equal(JSON.parse(await space.evaluate(() => localStorage.getItem("BTR_Userscript.sync"))).mode, "overseas");
+    // A newly versioned build must reuse the same manager storage without restoring defaults.
+    const nextVersion = version.split(".").map(Number);
+    nextVersion[3] += 1;
+    const upgradedScript = buildUserscript(nextVersion.join("."));
+    await space.route("**/dist/userscript-test.user.js", route => route.fulfill({ contentType: "application/javascript", body: upgradedScript }));
+    await space.goto(`${origin}?gm=live`);
+    await modeOf(space, "overseas");
+    assert.deepEqual(await settingsOf(space).then(value => [value.mode, value.autoConcurrency, value.concurrency]), ["overseas", false, 16]);
+    assert.equal(JSON.parse(gmStore.get("sync")).mode, "overseas");
+    await space.unroute("**/dist/userscript-test.user.js");
     // Another subdomain, with nothing in its own localStorage, reads the same settings.
     const video = await managerTab();
     await video.goto(`${origin}?gm=live`);
