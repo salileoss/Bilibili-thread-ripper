@@ -6,8 +6,8 @@ const { dirname, join, resolve } = require("node:path");
 const { pathToFileURL } = require("node:url");
 const root = resolve(__dirname, "..");
 (async () => {
-const { ancestor, BRANCH, CANARY, compareVersions, git, nextVersion, prepareCandidate, reviewPaths, STABLE, validateIdentity } = await import("../scripts/upstream-sync.mjs");
-const { autoMergeAllowed, publishTag, verifyCandidate, verifyRelease } = await import("../scripts/upstream-control.mjs");
+const { ancestor, BRANCH, CANARY, compareVersions, FORK_CHANGELOG, git, nextVersion, prepareCandidate, reviewPaths, STABLE, validateIdentity } = await import("../scripts/upstream-sync.mjs");
+const { autoMergeAllowed, completeCandidate, dispatchCandidateTests, mergeAndPublish, publishTag, REQUIRED_CANDIDATE_JOBS, verifyCandidate, verifyRelease, verifyTestRun } = await import("../scripts/upstream-control.mjs");
 const now = new Date("2026-11-03T12:00:00Z");
 function put(repo, file, content) {
   mkdirSync(dirname(join(repo, file)), { recursive: true });
@@ -24,7 +24,7 @@ async function fixture({ sourceConflict = false, protectedChange = false, identi
   put(repo, "user_scripts/adapter/loader.js", "// loader\n");
   put(repo, "src/test.js", "const runtime = 'base';\n");
   put(repo, "src/fork.js", "const westCoast = false;\n");
-  put(repo, "CHANGELOG.md", "# Changes\n\n## [Unreleased]\n\n- Maintainer notes.\n\n## [2026.11.2.1] - 2026-11-02\n\n- Base.\n");
+  put(repo, "CHANGELOG.md", "# Upstream changes\n\n## [Unreleased]\n\n## [2026.11.2.1] - 2026-11-02\n\n- Base.\n");
   mkdirSync(join(repo, "scripts"));
   for (const file of ["build.mjs", "release-notes.mjs"]) copyFileSync(join(root, "scripts", file), join(repo, "scripts", file));
   const build = await import(pathToFileURL(join(repo, "scripts/build.mjs")).href);
@@ -36,6 +36,7 @@ async function fixture({ sourceConflict = false, protectedChange = false, identi
   commit(repo, "base");
   git(repo, "tag", "2026.11.2.1");
   git(repo, "branch", "upstream");
+  put(repo, FORK_CHANGELOG, "# Fork changes\n\n## [Unreleased]\n\n- Maintainer notes.\n\n## [2026.11.2.2] - 2026-11-02\n\n- Fork improvements.\n");
   put(repo, "src/fork.js", "const westCoast = true;\n");
   if (sourceConflict) put(repo, "src/test.js", "const runtime = 'fork';\n");
   bundles("2026.11.2.2");
@@ -43,6 +44,7 @@ async function fixture({ sourceConflict = false, protectedChange = false, identi
   git(repo, "update-ref", "refs/remotes/origin/main", baseSha);
   git(repo, "checkout", "upstream");
   put(repo, "src/test.js", "const runtime = 'upstream-fixed';\n");
+  put(repo, "CHANGELOG.md", "# Upstream changes\n\n## [Unreleased]\n\n## [2026.11.3.1] - 2026-11-03\n\n- Upstream fixes.\n\n## [2026.11.2.1] - 2026-11-02\n\n- Base.\n");
   if (protectedChange) put(repo, ".github/workflows/example.yml", "name: Changed workflow\n");
   if (identityChange) { meta.header.find(([key]) => key === "namespace")[1] = "https://github.com/original/repo"; put(repo, "user_scripts/adapter/meta.json", JSON.stringify(meta)); }
   bundles("2026.11.3.1");
@@ -79,6 +81,8 @@ test("clean merge rebuilds conflicting generated bundles and preserves fork and 
   assert.equal(git(f.repo, "rev-parse", "main"), f.baseSha, "published main stays unchanged");
   assert.equal(git(f.repo, "tag", "--list"), "2026.11.2.1", "upstream release tag is not imported");
   assert.deepEqual(verifyCandidate(f.repo, result), []);
+  assert.equal(readFileSync(join(f.repo, "CHANGELOG.md"), "utf8").trim(), git(f.repo, "show", `${f.upstreamSha}:CHANGELOG.md`), "upstream changelog stays byte-for-byte upstream-owned");
+  assert.match(readFileSync(join(f.repo, FORK_CHANGELOG), "utf8"), /Fork improvements/);
 });
 test("reruns reuse the same candidate, commit and version", async () => {
   const f = await fixture(), first = await prepareCandidate(f);
@@ -95,12 +99,14 @@ test("a later release retains previously published fork changelog entries", asyn
   git(f.repo, "tag", first.stableVersion);
   git(f.repo, "checkout", "upstream");
   put(f.repo, "src/test.js", "const runtime = 'second-upstream-fix';\n");
+  put(f.repo, "CHANGELOG.md", readFileSync(join(f.repo, "CHANGELOG.md"), "utf8").replace("## [Unreleased]", "## [Unreleased]\n\n## [2026.11.4.1] - 2026-11-04\n\n- Another upstream release."));
   const upstreamSha = commit(f.repo, "next upstream release");
   git(f.repo, "checkout", "main");
   const next = await prepareCandidate({ ...f, upstreamSha, upstreamTag: "2026.11.4.1", existing: BRANCH });
-  const changelog = readFileSync(join(f.repo, "CHANGELOG.md"), "utf8");
+  const changelog = readFileSync(join(f.repo, FORK_CHANGELOG), "utf8");
   assert.ok(changelog.includes(`## [${first.stableVersion}]`));
   assert.ok(changelog.includes(`## [${next.stableVersion}]`));
+  assert.equal(readFileSync(join(f.repo, "CHANGELOG.md"), "utf8").trim(), git(f.repo, "show", `${upstreamSha}:CHANGELOG.md`));
 });
 test("candidate Git bundle can be transported without checkout or execution in the writer", async () => {
   const f = await fixture(), result = await prepareCandidate(f);
@@ -118,7 +124,7 @@ test("an existing version tag causes the pending candidate to be rebuilt at a hi
   assert.throws(() => verifyCandidate(f.repo, first), /collides/);
   const next = await prepareCandidate({ ...f, existing: BRANCH });
   assert.ok(compareVersions(next.stableVersion, first.stableVersion) > 0);
-  const changelog = readFileSync(join(f.repo, "CHANGELOG.md"), "utf8");
+  const changelog = readFileSync(join(f.repo, FORK_CHANGELOG), "utf8");
   assert.equal((changelog.match(/West Coast upstream update/g) || []).length, 1);
   assert.match(changelog, /## \[Unreleased\]\n\n- Maintainer notes\.\n\n## \[/);
 });
@@ -193,8 +199,86 @@ test("publication creates the exact tag once, explicitly dispatches Release, and
   assert.throws(() => publishTag({ tag: "2026.11.3.1", sha: "b".repeat(40) }, request), /refusing to move/);
 });
 test("auto-merge is opt-in and rejects protected paths or weak branch protection", () => {
-  const options = { enabled: "true", app: "true", paths: [], protection: { required_status_checks: { strict: true, contexts: ["汇总"] }, enforce_admins: { enabled: true } }, repository: { allow_auto_merge: true, allow_merge_commit: true } };
+  const options = { enabled: "true", paths: [], protection: { required_status_checks: { strict: true, contexts: ["汇总"] }, enforce_admins: { enabled: true } }, repository: { allow_auto_merge: true, allow_merge_commit: true } };
   assert.equal(autoMergeAllowed(options), true);
-  for (const override of [{ enabled: "false" }, { app: "false" }, { paths: ["scripts/build.mjs"] }, { protection: {} }, { protection: { required_status_checks: { strict: true, contexts: ["unrelated"] }, enforce_admins: { enabled: true } } }, { repository: { allow_auto_merge: true, allow_merge_commit: false } }]) assert.equal(Boolean(autoMergeAllowed({ ...options, ...override })), false);
+  for (const override of [{ enabled: "false" }, { paths: ["scripts/build.mjs"] }, { protection: {} }, { protection: { required_status_checks: { strict: true, contexts: ["unrelated"] }, enforce_admins: { enabled: true } } }, { repository: { allow_auto_merge: true, allow_merge_commit: false } }]) assert.equal(Boolean(autoMergeAllowed({ ...options, ...override })), false);
+});
+const runFor = sha => ({ id: 42, event: "workflow_dispatch", workflow_id: 17, path: ".github/workflows/tests.yml", head_branch: BRANCH, repository: { full_name: "salileoss/Bilibili-thread-ripper" }, head_repository: { full_name: "salileoss/Bilibili-thread-ripper" }, head_sha: sha, status: "completed", conclusion: "success" });
+const passedJobs = () => REQUIRED_CANDIDATE_JOBS.map(name => ({ name, status: "completed", conclusion: "success" }));
+test("explicit candidate CI includes real media and does not publish Canary", () => {
+  const calls = [];
+  dispatchCandidateTests((...args) => calls.push(args));
+  assert.deepEqual(calls[0], ["repos/salileoss/Bilibili-thread-ripper/actions/workflows/tests.yml/dispatches", "POST", { ref: BRANCH, inputs: { online: "true", canary: "false", ignore_failures: "false" } }]);
+});
+test("CI completion rejects unrelated runs, skipped media and incomplete regression coverage", () => {
+  const run = runFor("a".repeat(40));
+  assert.equal(verifyTestRun(run, 17, passedJobs()), run.head_sha);
+  for (const override of [{ event: "pull_request" }, { workflow_id: 99 }, { head_branch: "main" }, { head_repository: { full_name: "other/repo" } }, { path: ".github/workflows/other.yml" }, { conclusion: "failure" }]) assert.throws(() => verifyTestRun({ ...run, ...override }, 17, passedJobs()));
+  assert.throws(() => verifyTestRun(run, 17, passedJobs().filter(job => !job.name.includes("regression-smoke"))), /required candidate job/);
+  const skipped = passedJobs(); skipped.find(job => job.name.startsWith("真实视频")).conclusion = "skipped";
+  assert.throws(() => verifyTestRun(run, 17, skipped), /required candidate job/);
+});
+test("a token merge pins the candidate SHA and explicitly publishes the returned merge SHA", () => {
+  const sha = "a".repeat(40), mergedSha = "b".repeat(40), calls = [];
+  mergeAndPublish({ number: 3, head: { sha } }, sha, (endpoint, method, body) => { calls.push({ endpoint, method, body }); return { merged: true, sha: mergedSha }; });
+  assert.deepEqual(calls[0], { endpoint: "repos/salileoss/Bilibili-thread-ripper/pulls/3/merge", method: "PUT", body: { sha, merge_method: "merge" } });
+  assert.deepEqual(calls[1].body, { ref: "main", inputs: { commit: mergedSha } });
+  assert.throws(() => mergeAndPublish({ number: 3, head: { sha: mergedSha } }, sha), /changed during tests/);
+  assert.throws(() => mergeAndPublish({ number: 3, head: { sha } }, sha, () => ({ merged: false })), /did not merge/);
+});
+async function completionFixture(options = {}) {
+  const f = await fixture(options), result = await prepareCandidate(f);
+  const origin = mkdtempSync(join(tmpdir(), "btr-completion-origin-"));
+  git(f.repo, "clone", "--bare", f.repo, origin);
+  git(f.repo, "remote", "add", "origin", origin);
+  let pr = { number: 3, body: "<!-- btr-upstream-sync:v1 -->", head: { sha: result.sha } }, mergedPr;
+  const calls = [], jobs = passedJobs();
+  let failPublication = false;
+  const request = (endpoint, method = "GET", body) => {
+    calls.push({ endpoint, method, body });
+    if (endpoint.endsWith("/actions/runs/42")) return runFor(result.sha);
+    if (endpoint.endsWith("/actions/workflows/tests.yml")) return { id: 17 };
+    if (endpoint.includes("/jobs?")) return { jobs };
+    if (endpoint.includes("pulls?state=open")) return pr ? [pr] : [];
+    if (endpoint.includes("pulls?state=closed")) return mergedPr ? [mergedPr] : [];
+    if (endpoint.endsWith("/branches/main/protection")) return { required_status_checks: { strict: true, contexts: ["汇总"] }, enforce_admins: { enabled: true } };
+    if (endpoint === "repos/salileoss/Bilibili-thread-ripper") return { allow_auto_merge: true, allow_merge_commit: true };
+    if (method === "PUT" && endpoint.endsWith("/merge")) {
+      const tree = git(f.repo, "rev-parse", `${result.sha}^{tree}`);
+      const sha = git(f.repo, "commit-tree", tree, "-p", result.baseSha, "-p", result.sha, "-m", "Reviewed merge");
+      git(f.repo, "push", "origin", `${sha}:refs/heads/main`);
+      mergedPr = { ...pr, merged_at: "2026-11-04T00:00:00Z", merge_commit_sha: sha }; pr = null;
+      return { merged: true, sha };
+    }
+    if (endpoint.endsWith("/upstream-publish.yml/dispatches") && failPublication) { failPublication = false; throw new Error("Transient publication failure"); }
+    return null;
+  };
+  return { ...f, result, request, calls, jobs, failNextPublication: () => { failPublication = true; } };
+}
+test("built-in token completion merges only a fresh fully tested candidate and retries publication without merging twice", async () => {
+  const f = await completionFixture();
+  f.failNextPublication();
+  await assert.rejects(completeCandidate(f.repo, "42", f.request, "true"), /Transient publication/);
+  await completeCandidate(f.repo, "42", f.request, "true");
+  assert.equal(f.calls.filter(call => call.method === "PUT").length, 1);
+  assert.equal(f.calls.filter(call => call.endpoint.endsWith("/upstream-publish.yml/dispatches")).length, 2);
+});
+test("failed media and protected-path changes never reach the merge API", async () => {
+  const failed = await completionFixture();
+  failed.jobs.find(job => job.name.startsWith("真实视频")).conclusion = "failure";
+  await assert.rejects(completeCandidate(failed.repo, "42", failed.request, "true"), /required candidate job/);
+  assert.ok(!failed.calls.some(call => call.method === "PUT"));
+  const guarded = await completionFixture({ protectedChange: true });
+  await completeCandidate(guarded.repo, "42", guarded.request, "true");
+  assert.ok(!guarded.calls.some(call => call.method === "PUT"));
+  assert.ok(guarded.calls.some(call => call.body?.state === "success"));
+});
+test("main moving after native CI blocks token auto-merge", async () => {
+  const f = await completionFixture();
+  const tree = git(f.repo, "rev-parse", `${f.baseSha}^{tree}`);
+  const moved = git(f.repo, "commit-tree", tree, "-p", f.baseSha, "-m", "main moved");
+  git(f.repo, "push", "origin", `${moved}:refs/heads/main`);
+  await assert.rejects(completeCandidate(f.repo, "42", f.request, "true"), /main moved/);
+  assert.ok(!f.calls.some(call => call.method === "PUT"));
 });
 })().catch(error => { console.error(error); process.exitCode = 1; });

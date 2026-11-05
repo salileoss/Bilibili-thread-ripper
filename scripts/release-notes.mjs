@@ -1,4 +1,4 @@
-// Prints a released version's section of CHANGELOG.md, for its GitHub Release, after checking
+// Prints a released version's section of FORK_CHANGELOG.md, for its GitHub Release, after checking
 // that the published userscript carries that version. The Release workflow runs it on the tag:
 // `node scripts/release-notes.mjs 2026.10.24.1`. Every Release starts with NOTICE, for people
 // who come from the early video about the Chrome extension, which is no longer maintained.
@@ -17,10 +17,10 @@ const version = String(process.argv[2] || "");
 if (!VERSION_PATTERN.test(version)) stop(`版本号必须是四段数字：${version}`);
 const published = /^\/\/ @version\s+(\S+)$/m.exec(readFileSync(join(root, RELEASE_OUTPUT), "utf8"))?.[1];
 if (published !== version) stop(`${RELEASE_OUTPUT} 的版本是 ${published}，不是 ${version}。`);
-const lines = readFileSync(join(root, "CHANGELOG.md"), "utf8").split(/\r?\n/);
+const lines = readFileSync(join(root, "FORK_CHANGELOG.md"), "utf8").split(/\r?\n/);
 const start = lines.findIndex((line) => line.startsWith(`## [${version}]`));
-if (start < 0) stop(`CHANGELOG.md 里没有 ${version} 这一节。`);
+if (start < 0) stop(`FORK_CHANGELOG.md 里没有 ${version} 这一节。`);
 const end = lines.findIndex((line, index) => index > start && line.startsWith("## ["));
 const notes = lines.slice(start + 1, end < 0 ? undefined : end).join("\n").trim();
-if (!notes) stop(`CHANGELOG.md 里 ${version} 这一节是空的。`);
+if (!notes) stop(`FORK_CHANGELOG.md 里 ${version} 这一节是空的。`);
 console.log(`${NOTICE}\n\n${notes}`);
