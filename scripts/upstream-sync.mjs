@@ -11,6 +11,7 @@ export const UPSTREAM = "MrTangLuyao/Bilibili-thread-ripper";
 export const BRANCH = "automation/upstream-sync";
 export const STATUS = "Upstream candidate";
 export const STATE = "upstream-sync.json";
+export const FORK_CHANGELOG = "FORK_CHANGELOG.md";
 export const STABLE = "user_scripts/bilibili-thread-ripper.user.js";
 export const CANARY = "canary/bilibili-thread-ripper-canary.user.js";
 export const BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com";
@@ -106,7 +107,7 @@ export async function prepareCandidate({ repo, upstreamSha, upstreamTag, base = 
     ? priorCanary : nextVersion([priorCanary, baseCanary], now);
   writeFileSync(join(repo, STABLE), build.buildUserscript(stableVersion));
   writeFileSync(join(repo, CANARY), build.buildUserscript(canaryVersion, { channel: "canary" }));
-  let changelog = normalize(readFileSync(join(repo, "CHANGELOG.md"), "utf8"));
+  let changelog = normalize(readFileSync(join(repo, FORK_CHANGELOG), "utf8"));
   if (existing && oldState?.stableVersion && compareVersions(oldState.stableVersion, baseVersion) > 0) {
     const heading = `## [${oldState.stableVersion}]`;
     const start = changelog.indexOf(heading);
@@ -119,10 +120,10 @@ export async function prepareCandidate({ repo, upstreamSha, upstreamTag, base = 
   // Keep maintainer-authored Unreleased notes in place when replacing a pending candidate.
   const at = firstRelease < 0 ? changelog.length : firstRelease;
   changelog = changelog.slice(0, at).trimEnd() + notes + "\n\n" + changelog.slice(at);
-  writeFileSync(join(repo, "CHANGELOG.md"), changelog);
+  writeFileSync(join(repo, FORK_CHANGELOG), changelog);
   const state = { schema: 1, repository: FORK, baseSha, baseVersion, upstreamSha, upstreamTag, stableVersion, canaryVersion, reviewRequiredPaths };
   writeFileSync(join(repo, STATE), JSON.stringify(state, null, 2) + "\n");
-  git(repo, "add", "--", STABLE, CANARY, "CHANGELOG.md", STATE);
+  git(repo, "add", "--", STABLE, CANARY, FORK_CHANGELOG, STATE);
   git(repo, "commit", "-m", `Prepare West Coast ${stableVersion} from upstream ${upstreamTag}\n\nBTR-Upstream-Sync: v1`);
   return { ...state, status: "candidate", sha: git(repo, "rev-parse", "HEAD"), changed: true };
 }

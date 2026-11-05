@@ -1,0 +1,45 @@
+name: Complete upstream update
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches: [automation/upstream-sync]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-completion
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: >-
+      github.repository == 'salileoss/Bilibili-thread-ripper'
+      && github.event.workflow_run.event == 'workflow_dispatch'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+      actions: write
+    steps:
+      # workflow_run loads this workflow from default main. Never check out the candidate
+      # or download its executable artifacts into this write-enabled job.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Verify exact candidate CI and merge eligible updates under branch protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_AUTO_MERGE: ${{ vars.UPSTREAM_AUTO_MERGE }}
+          TEST_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: node scripts/upstream-control.mjs complete "$TEST_RUN_ID"

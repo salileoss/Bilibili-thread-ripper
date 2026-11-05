@@ -232,14 +232,14 @@ jobs:
       HEVC: ${{ needs.hevc.result }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        if: github.event_name == 'pull_request' && github.head_ref == 'automation/upstream-sync'
+        if: (github.event_name == 'pull_request' && github.head_ref == 'automation/upstream-sync') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/automation/upstream-sync')
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Upstream PR must include current main and advance the fork version
-        if: github.event_name == 'pull_request' && github.head_ref == 'automation/upstream-sync'
+        if: (github.event_name == 'pull_request' && github.head_ref == 'automation/upstream-sync') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/automation/upstream-sync')
         env:
-          CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha }}
+          CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
           node --input-type=module <<'NODE'

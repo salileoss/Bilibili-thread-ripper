@@ -21,8 +21,8 @@ export function setStatus(sha, state, description, request = api) {
   if (!SHA.test(sha)) throw new Error("Invalid status SHA");
   request(`repos/${FORK}/statuses/${sha}`, "POST", { state, context: STATUS, description: description.slice(0, 140), target_url: runUrl() });
 }
-function openPr() {
-  const prs = api(`repos/${FORK}/pulls?state=open&base=main&head=salileoss:${BRANCH}`);
+function openPr(request = api) {
+  const prs = request(`repos/${FORK}/pulls?state=open&base=main&head=salileoss:${BRANCH}`);
   if (prs.length > 1) throw new Error("Multiple update PRs found");
   const pr = prs[0];
   if (pr && !pr.body?.includes(MARKER)) throw new Error("Existing update PR is not owned by this automation");
@@ -45,7 +45,7 @@ export function verifyCandidate(repo, result) {
   return [...new Set([...reviewPaths(git(repo, "diff", "--name-only", common, result.upstreamSha).split("\n")), ...reviewPaths(git(repo, "diff", "--name-only", baseSha, result.sha).split("\n")).filter(path => path !== STATE)])];
 }
 function prBody(result, paths) {
-  return `${MARKER}\nIntegrates [upstream ${result.upstreamTag}](https://github.com/${UPSTREAM}/releases/tag/${result.upstreamTag}) (${result.upstreamSha}) into BTR West Coast **${result.stableVersion}**.\n\nFork base: ${result.baseSha}. Both generated bundles and release notes are included.\n\n[Validation run](${runUrl()}). The \`${STATUS}\` status validates this exact candidate; failures block automatic merge.\n\n${paths.length ? `**Manual review required:**\n\n${paths.map(path => `- \`${path}\``).join("\n")}` : "No protected paths changed. Automatic merging remains off unless UPSTREAM_AUTO_MERGE is enabled and a GitHub App is configured."}\n\nMerge using **Create a merge commit** to preserve upstream ancestry. Merging publishes the stable script at its existing update URL.\n`;
+  return `${MARKER}\nIntegrates [upstream ${result.upstreamTag}](https://github.com/${UPSTREAM}/releases/tag/${result.upstreamTag}) (${result.upstreamSha}) into BTR West Coast **${result.stableVersion}**.\n\nFork base: ${result.baseSha}. Both generated bundles and fork release notes are included; CHANGELOG.md remains upstream-owned.\n\n[Preparation run](${runUrl()}). The \`${STATUS}\` status validates this exact candidate after explicitly dispatched CI; failures block automatic merge.\n\n${paths.length ? `**Manual review required:**\n\n${paths.map(path => `- \`${path}\``).join("\n")}` : "No protected paths changed. Guarded automatic merging applies when UPSTREAM_AUTO_MERGE and the repository setting are enabled."}\n\nMerge using **Create a merge commit** to preserve upstream ancestry. Merging publishes the stable script at its existing update URL.\n`;
 }
 async function pushCandidate(repo, directory) {
   const result = JSON.parse(readFileSync(resolve(directory, "report.json"), "utf8"));
@@ -68,33 +68,75 @@ async function pushCandidate(repo, directory) {
   const body = { title: `Update West Coast to upstream ${result.upstreamTag}`, body: prBody(result, paths), base: "main", head: BRANCH };
   const updated = pr ? api(`repos/${FORK}/pulls/${pr.number}`, "PATCH", { title: body.title, body: body.body }) : api(`repos/${FORK}/pulls`, "POST", body);
   setStatus(result.sha, "pending", "Running fork regression, browser and real-media tests");
+  dispatchCandidateTests(api);
   output({ status: "candidate", sha: result.sha, pr: updated.number, review_required: paths.length > 0 });
   summary(`Update PR: ${updated.html_url}\n\nCandidate: ${result.sha}\n\nManual review: ${paths.length ? paths.join(", ") : "pilot mode"}`);
 }
-export function autoMergeAllowed({ enabled, app, paths, protection, repository }) {
-  return enabled === "true" && app === "true" && paths.length === 0 && repository.allow_auto_merge === true && repository.allow_merge_commit === true
+export function dispatchCandidateTests(request = api) {
+  // workflow_dispatch runs on the candidate SHA even with GITHUB_TOKEN, without PR-run approval.
+  request(`repos/${FORK}/actions/workflows/tests.yml/dispatches`, "POST", { ref: BRANCH, inputs: { online: "true", canary: "false", ignore_failures: "false" } });
+}
+export function autoMergeAllowed({ enabled, paths, protection, repository }) {
+  return enabled === "true" && paths.length === 0 && repository.allow_auto_merge === true && repository.allow_merge_commit === true
     && protection.required_status_checks?.strict === true && protection.required_status_checks.contexts?.includes("汇总") && protection.enforce_admins?.enabled === true;
 }
-async function finish(repo, directory) {
-  const result = JSON.parse(readFileSync(resolve(directory, "report.json"), "utf8"));
-  let paths;
+export const REQUIRED_CANDIDATE_JOBS = ["准备", "汇总", "离线 · 单元测试", "离线 · notification-smoke-test", "离线 · notification-error-test", "离线 · userscript-test", "离线 · regression-smoke-test", "真实视频 · BV1T1NZ6xEZZ", "真实视频 · BV1GJ411x7h7"];
+export function verifyTestRun(run, workflowId, jobs) {
+  if (run.event !== "workflow_dispatch" || run.path !== ".github/workflows/tests.yml" || run.workflow_id !== workflowId
+    || run.head_branch !== BRANCH || run.repository?.full_name !== FORK || run.head_repository?.full_name !== FORK || !SHA.test(run.head_sha)) throw new Error("Not a trusted candidate CI run");
+  if (run.status !== "completed" || run.conclusion !== "success") throw new Error("Candidate tests did not all pass");
+  for (const name of REQUIRED_CANDIDATE_JOBS) {
+    const matches = jobs.filter(job => job.name === name);
+    if (matches.length !== 1 || matches[0].status !== "completed" || matches[0].conclusion !== "success") throw new Error(`Missing or unsuccessful required candidate job: ${name}`);
+  }
+  return run.head_sha;
+}
+export function dispatchPublication(sha, request = api) {
+  if (!SHA.test(sha)) throw new Error("Invalid merge SHA");
+  request(`repos/${FORK}/actions/workflows/upstream-publish.yml/dispatches`, "POST", { ref: "main", inputs: { commit: sha } });
+}
+export function mergeAndPublish(pr, sha, request = api) {
+  if (!Number.isSafeInteger(pr.number) || pr.head.sha !== sha || !SHA.test(sha)) throw new Error("Update PR changed during tests");
+  const merged = request(`repos/${FORK}/pulls/${pr.number}/merge`, "PUT", { sha, merge_method: "merge" });
+  if (!merged.merged || !SHA.test(merged.sha)) throw new Error("GitHub did not merge the candidate");
+  // Token-generated merges do not start push workflows. Publish the exact merge explicitly.
+  dispatchPublication(merged.sha, request);
+  return merged.sha;
+}
+export async function completeCandidate(repo, runId, request = api, enabled = process.env.UPSTREAM_AUTO_MERGE) {
+  if (!/^\d+$/.test(runId || "")) throw new Error("Expected a workflow run ID");
+  const run = request(`repos/${FORK}/actions/runs/${runId}`);
+  const workflow = request(`repos/${FORK}/actions/workflows/tests.yml`);
+  const pr = openPr(request);
+  if (pr && pr.head.sha !== run.head_sha) { summary("Ignoring a CI result for a superseded candidate."); return; }
+  let sha;
   try {
-    if (process.env.TEST_RESULT !== "success") throw new Error("Candidate tests did not all pass");
+    const jobs = request(`repos/${FORK}/actions/runs/${runId}/jobs?per_page=100`);
+    sha = verifyTestRun(run, workflow.id, jobs.jobs);
+    if (!pr) {
+      // A previous completion may have merged successfully before publication dispatch failed.
+      const closed = request(`repos/${FORK}/pulls?state=closed&base=main&head=salileoss:${BRANCH}`);
+      const merged = closed.find(item => item.merged_at && item.head.sha === sha && item.body?.includes(MARKER));
+      if (merged) { dispatchPublication(merged.merge_commit_sha, request); summary("Retried publication for the already merged candidate."); }
+      else summary("No open automated update PR matches this run.");
+      return;
+    }
     git(repo, "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main", "+refs/tags/*:refs/tags/*");
     git(repo, "fetch", "--no-tags", "origin", `refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}`);
-    if (git(repo, "rev-parse", `origin/${BRANCH}`) !== result.sha) throw new Error("Update branch changed during tests");
-    paths = verifyCandidate(repo, result);
-    setStatus(result.sha, "success", "All candidate tests passed; reviewed merge is available");
-  } catch (error) { setStatus(result.sha, "failure", error.message); throw error; }
-  if (process.env.UPSTREAM_AUTO_MERGE !== "true" || process.env.HAS_APP !== "true" || paths.length) {
-    summary("Candidate passed. Merge-commit review required (pilot mode or protected paths)."); return;
-  }
-  const protection = api(`repos/${FORK}/branches/main/protection`);
-  if (!autoMergeAllowed({ enabled: process.env.UPSTREAM_AUTO_MERGE, app: process.env.HAS_APP, paths, protection, repository: api(`repos/${FORK}`) })) throw new Error("Auto-merge requires strict required checks, admin enforcement and repository merge/auto-merge support");
-  const pr = openPr();
-  if (!pr || pr.head.sha !== result.sha) throw new Error("Update PR changed during tests");
-  execFileSync("gh", ["pr", "merge", String(pr.number), "--repo", FORK, "--auto", "--merge", "--match-head-commit", result.sha], { stdio: "inherit" });
-  summary(`Enabled merge-commit auto-merge for PR #${pr.number}.`);
+    if (git(repo, "rev-parse", `origin/${BRANCH}`) !== sha) throw new Error("Update branch changed during tests");
+    const result = { ...JSON.parse(git(repo, "show", `${sha}:${STATE}`)), sha };
+    const paths = verifyCandidate(repo, result);
+    setStatus(sha, "success", "All candidate tests passed; required branch checks remain enforced", request);
+    if (enabled !== "true" || paths.length) {
+      summary("Candidate passed. Reviewed merge required (auto-merge off or protected paths)."); return;
+    }
+    const protection = request(`repos/${FORK}/branches/main/protection`);
+    if (!autoMergeAllowed({ enabled, paths, protection, repository: request(`repos/${FORK}`) })) throw new Error("Auto-merge requires strict required checks, admin enforcement and repository merge/auto-merge support");
+    const current = openPr(request);
+    if (!current || current.head.sha !== sha) throw new Error("Update PR changed during tests");
+    const mergedSha = mergeAndPublish(current, sha, request);
+    summary(`Merged update PR #${pr.number} at ${mergedSha} and dispatched publication.`);
+  } catch (error) { if (pr && SHA.test(run.head_sha)) setStatus(run.head_sha, "failure", error.message, request); throw error; }
 }
 export async function verifyRelease(repo, sha) {
   if (!SHA.test(sha)) throw new Error("Release needs an exact commit SHA");
@@ -134,11 +176,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       throw error;
     }
   }
-  else if (command === "finish") await finish(repo, process.argv[3]);
+  else if (command === "complete") await completeCandidate(repo, process.argv[3]);
   else if (command === "verify-release") {
     const result = await verifyRelease(repo, process.argv[3]);
     output(result ? { ...result, publish: "true" } : { publish: "false" });
     summary(result ? `Verified release ${result.tag} at ${result.sha}` : "This is not an upstream-sync release.");
   } else if (command === "tag") publishTag({ tag: process.env.RELEASE_TAG, sha: process.env.RELEASE_SHA });
-  else throw new Error("Use push, finish, verify-release or tag");
+  else throw new Error("Use push, complete, verify-release or tag");
 }

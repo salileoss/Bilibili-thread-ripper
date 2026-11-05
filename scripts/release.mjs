@@ -1,14 +1,14 @@
 // Publishes a version: `node scripts/release.mjs` (or `npm run release`).
 //
 // 1. Checks: nothing uncommitted, on main, not behind origin, the tags fetched, and something
-//    written under "## [Unreleased]" in CHANGELOG.md.
+//    written under "## [Unreleased]" in FORK_CHANGELOG.md.
 // 2. The version is today's date (Melbourne time) and the day's release number:
 //    2026.9.26.1, 2026.9.26.2, …
 // 3. "## [Unreleased]" gets a new heading "## [2026.9.26.1] - 2026-09-26" under it, so what
 //    was written there becomes this release; older entries stay as they are.
 // 4. Builds user_scripts/bilibili-thread-ripper.user.js and runs dev/run-tests.js.
 // 5. Commits "release 2026.9.26.1" and tags it.
-// 6. Prints this release's CHANGELOG section and the push commands. It does not push: the
+// 6. Prints this release's fork changelog section and the push commands. It does not push: the
 //    file on main is what every user's script manager downloads. Pushing the tag makes
 //    .github/workflows/release.yml publish the GitHub Release.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { RELEASE_OUTPUT, VERSION_PATTERN, root, writeUserscript } from "./build.mjs";
 
 const TIME_ZONE = "Australia/Melbourne";
-const CHANGELOG = join(root, "CHANGELOG.md");
+const CHANGELOG = join(root, "FORK_CHANGELOG.md");
 const UNRELEASED = "## [Unreleased]";
 
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
@@ -36,7 +36,7 @@ const changelog = readFileSync(CHANGELOG, "utf8");
 const eol = changelog.includes("\r\n") ? "\r\n" : "\n";
 const lines = changelog.split(/\r?\n/);
 const start = lines.indexOf(UNRELEASED);
-if (start < 0) stop(`CHANGELOG.md 里没有 "${UNRELEASED}" 这一节。`);
+if (start < 0) stop(`FORK_CHANGELOG.md 里没有 "${UNRELEASED}" 这一节。`);
 let end = lines.findIndex((line, index) => index > start && line.startsWith("## ["));
 if (end < 0) end = lines.length;
 if (!lines.slice(start + 1, end).some((line) => line.trim())) stop(`"${UNRELEASED}" 下面是空的，先写这次改了什么。`);
@@ -60,7 +60,7 @@ lines.splice(start + 1, 0, "", heading);
 writeFileSync(CHANGELOG, lines.join(eol));
 
 // ---- 4. Build and test ----
-const undo = () => git("checkout", "--", "CHANGELOG.md", RELEASE_OUTPUT);
+const undo = () => git("checkout", "--", "FORK_CHANGELOG.md", RELEASE_OUTPUT);
 try {
   writeUserscript(version, RELEASE_OUTPUT);
 } catch (error) {
@@ -71,11 +71,11 @@ console.log(`构建完成：${version}，开始测试……`);
 const tests = spawnSync(process.execPath, [join(root, "dev/run-tests.js")], { cwd: root, stdio: "inherit" });
 if (tests.status !== 0) {
   undo();
-  stop("测试没有全部通过，CHANGELOG.md 和油猴脚本已经改回原样。");
+  stop("测试没有全部通过，FORK_CHANGELOG.md 和油猴脚本已经改回原样。");
 }
 
 // ---- 5. Commit and tag ----
-git("add", "CHANGELOG.md", RELEASE_OUTPUT);
+git("add", "FORK_CHANGELOG.md", RELEASE_OUTPUT);
 git("commit", "-m", `release ${version}`);
 git("tag", version);
 

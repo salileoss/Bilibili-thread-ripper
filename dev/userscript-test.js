@@ -9,9 +9,9 @@ const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
 const meta = JSON.parse(fs.readFileSync(path.join(root, "user_scripts/adapter/meta.json"), "utf8"));
-// The published file carries the version of the newest release in CHANGELOG.md; the test
+// The published file carries the version of the newest release in FORK_CHANGELOG.md; the test
 // build uses the same one.
-const version = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8").match(/^## \[(\d+\.\d+\.\d+\.\d+)\]/m)[1];
+const version = fs.readFileSync(path.join(root, "FORK_CHANGELOG.md"), "utf8").match(/^## \[(\d+\.\d+\.\d+\.\d+)\]/m)[1];
 const published = fs.readFileSync(path.join(root, "user_scripts/bilibili-thread-ripper.user.js"), "utf8");
 let script = "";
 let canaryScript = "";
@@ -23,7 +23,7 @@ const source = (file, channel = "stable") => fs.readFileSync(path.join(root, fil
 function checkPublished() {
   const header = published.slice(0, published.indexOf("// ==/UserScript=="));
   const values = name => [...header.matchAll(new RegExp(`^// @${name}\\s+(.+)$`, "gm"))].map(match => match[1].trim());
-  assert.deepEqual(values("version"), [version], "the published script is not the newest release in CHANGELOG.md");
+  assert.deepEqual(values("version"), [version], "the published script is not the newest release in FORK_CHANGELOG.md");
   assert.deepEqual(values("updateURL"), [scriptUrl]);
 }
 
