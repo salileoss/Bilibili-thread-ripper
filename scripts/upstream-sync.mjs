@@ -138,8 +138,10 @@ export function report(result, directory) {
 }
 async function prepare(directory) {
   let result;
+  const releaseInfo = {};
   try {
     const release = api(`repos/${UPSTREAM}/releases/latest`);
+    releaseInfo.upstreamTag = release.tag_name;
     if (release.draft || release.prerelease || !VERSION.test(release.tag_name)) throw new Error("Upstream latest release is not a supported stable version");
     const repo = mkdtempSync(join(tmpdir(), "btr-upstream-"));
     git(repo, "clone", "--no-tags", "--branch", "main", `https://github.com/${FORK}.git`, ".");
@@ -149,12 +151,13 @@ async function prepare(directory) {
     if (branch) { git(repo, "fetch", "--no-tags", "origin", `refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}`); existing = `origin/${BRANCH}`; }
     git(repo, "fetch", "--no-tags", `https://github.com/${UPSTREAM}.git`, `refs/tags/${release.tag_name}`);
     const upstreamSha = git(repo, "rev-parse", "FETCH_HEAD^{commit}");
+    releaseInfo.upstreamSha = upstreamSha;
     result = await prepareCandidate({ repo, upstreamSha, upstreamTag: release.tag_name, existing });
     if (result.status === "candidate") {
       mkdirSync(directory, { recursive: true });
       git(repo, "bundle", "create", resolve(directory, "candidate.bundle"), `refs/heads/${BRANCH}`, "^origin/main");
     }
-  } catch (error) { result = { status: "blocked", error: String(error.message) }; }
+  } catch (error) { result = { ...releaseInfo, status: "blocked", error: String(error.message) }; }
   report(result, directory);
   if (result.status === "blocked") process.exitCode = 1;
 }

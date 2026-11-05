@@ -43,6 +43,17 @@ Conflicts, failed or skipped required checks, changed branches, stale main, vers
 
 GitHub may delay scheduled runs and can disable schedules in inactive public repositories. The manual trigger remains available. Workflow summaries and **Upstream candidate** report the current update result.
 
+## Review email notifications
+
+GitHub sends these notifications to the maintainer's configured notification email; no mail-service credentials or email addresses are stored in the repository.
+
+- When a tested update needs a reviewed merge, the bot requests a review from `salileoss` and posts the reason and workflow link on the PR.
+- Failed candidate checks and other blockers also raise manual-attention alerts. If a conflict prevents creating a PR, the bot opens one assigned **Upstream update needs review** issue. Issues must be enabled in the repository.
+- The same commit/blocker is not announced again on every scheduled run. A different blocker can add one new comment. A resolved standalone alert is closed when the update is imported.
+- Clean automatic merges and checks finding no update do not request a review or open an alert.
+- Enable **Email** for participating conversations, mentions and review requests in [GitHub notification settings](https://github.com/settings/notifications). Review requests and issue assignments provide targeted notifications without watching every repository event. GitHub's email delivery preferences are personal account settings, separate from workflow permissions.
+- Push and completion jobs have Issues write permission for assigned conflict alerts and Pull requests write permission for review requests. An optional App must grant Issues write as well. Candidate execution jobs remain read-only.
+
 ## Local checks and recovery
 
 - `npm run sync:dry-run` discovers and prepares an update in a disposable clone without pushing, tagging or creating a PR. It writes a report and candidate bundle under `dist/upstream-sync/`; the working checkout stays untouched. Conflicts produce a failed command and a list of paths.
