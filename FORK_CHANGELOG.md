@@ -4,6 +4,7 @@ Fork releases are recorded here. Original project release notes remain in [CHANG
 
 ## [Unreleased]
 
+- Request maintainer reviews for blocked upstream updates, with deduplicated GitHub email notifications and assigned issue alerts when conflicts prevent a PR.
 - Keep upstream and fork release histories separate so upstream release notes merge without recurring fork insertions.
 - Explicitly run candidate CI and publication when using the built-in GitHub token for guarded auto-merging.
 

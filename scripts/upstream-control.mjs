@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ancestor, api, BOT_EMAIL, BRANCH, CANARY, compareVersions, FORK, git, reviewPaths, STABLE, STATE, STATUS, UPSTREAM, validateIdentity, versionOf } from "./upstream-sync.mjs";
+import { closeReviewAlert, notifyNeedsReview } from "./review-alerts.mjs";
 
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^\d+\.\d+\.\d+\.\d+$/;
@@ -16,6 +17,10 @@ const output = values => {
 function summary(message) {
   console.log(message);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, message + "\n");
+}
+function alertReview(pr, key, reason, request = api) {
+  try { notifyNeedsReview({ pr, key, reason, url: runUrl() }, request); }
+  catch (error) { summary(`Review notification could not be sent: ${error.message}`); }
 }
 export function setStatus(sha, state, description, request = api) {
   if (!SHA.test(sha)) throw new Error("Invalid status SHA");
@@ -54,10 +59,13 @@ async function pushCandidate(repo, directory) {
   if (pr?.auto_merge) execFileSync("gh", ["pr", "merge", String(pr.number), "--repo", FORK, "--disable-auto"], { stdio: "inherit" });
   if (result.status === "blocked") {
     if (pr) setStatus(pr.head.sha, "failure", "Sync blocked; inspect this run before merging");
-    throw new Error(result.error);
+    const error = new Error(result.error);
+    error.reviewKey = result.upstreamSha || result.upstreamTag || "sync";
+    throw error;
   }
   if (result.status !== "candidate") {
     if (pr) setStatus(pr.head.sha, "failure", "Upstream release is already in main; close this superseded PR");
+    if (!pr) closeReviewAlert();
     output({ status: "no-update" }); summary("No new upstream release to integrate."); return;
   }
   git(repo, "fetch", "--no-tags", resolve(directory, "candidate.bundle"), `refs/heads/${BRANCH}:refs/remotes/prepared/upstream-sync`);
@@ -117,7 +125,7 @@ export async function completeCandidate(repo, runId, request = api, enabled = pr
       // A previous completion may have merged successfully before publication dispatch failed.
       const closed = request(`repos/${FORK}/pulls?state=closed&base=main&head=salileoss:${BRANCH}`);
       const merged = closed.find(item => item.merged_at && item.head.sha === sha && item.body?.includes(MARKER));
-      if (merged) { dispatchPublication(merged.merge_commit_sha, request); summary("Retried publication for the already merged candidate."); }
+      if (merged) { dispatchPublication(merged.merge_commit_sha, request); closeReviewAlert(request); summary("Retried publication for the already merged candidate."); }
       else summary("No open automated update PR matches this run.");
       return;
     }
@@ -128,6 +136,7 @@ export async function completeCandidate(repo, runId, request = api, enabled = pr
     const paths = verifyCandidate(repo, result);
     setStatus(sha, "success", "All candidate tests passed; required branch checks remain enforced", request);
     if (enabled !== "true" || paths.length) {
+      alertReview(pr, sha, paths.length ? `Protected files require review:\n${paths.join("\n")}` : "Automatic merging is disabled; review and merge this tested update.", request);
       summary("Candidate passed. Reviewed merge required (auto-merge off or protected paths)."); return;
     }
     const protection = request(`repos/${FORK}/branches/main/protection`);
@@ -135,8 +144,15 @@ export async function completeCandidate(repo, runId, request = api, enabled = pr
     const current = openPr(request);
     if (!current || current.head.sha !== sha) throw new Error("Update PR changed during tests");
     const mergedSha = mergeAndPublish(current, sha, request);
+    closeReviewAlert(request);
     summary(`Merged update PR #${pr.number} at ${mergedSha} and dispatched publication.`);
-  } catch (error) { if (pr && SHA.test(run.head_sha)) setStatus(run.head_sha, "failure", error.message, request); throw error; }
+  } catch (error) {
+    if (pr && SHA.test(run.head_sha)) {
+      setStatus(run.head_sha, "failure", error.message, request);
+      alertReview(openPr(request), run.head_sha, error.message, request);
+    }
+    throw error;
+  }
 }
 export async function verifyRelease(repo, sha) {
   if (!SHA.test(sha)) throw new Error("Release needs an exact commit SHA");
@@ -173,6 +189,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     catch (error) {
       const pr = openPr();
       if (pr) setStatus(pr.head.sha, "failure", "Sync blocked; inspect this run before merging");
+      alertReview(pr, error.reviewKey || pr?.head.sha || "sync", error.message);
       throw error;
     }
   }
