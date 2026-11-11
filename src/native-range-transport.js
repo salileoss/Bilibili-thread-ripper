@@ -434,8 +434,9 @@
     const cache = new Map(), jobs = new Set(), timeline = [];
     let lastError = "";
     const settings = () => core.normalizeSettings(options.getSettings());
+    // In English for the diagnostic copy; an error goes in as the message it was thrown with.
     const note = (what, detail = "") => {
-      timeline.push({ at: Math.round(performance.now()), time: Number(video.currentTime) || 0, what, detail });
+      timeline.push({ at: Math.round(performance.now()), time: Math.round((Number(video.currentTime) || 0) * 10) / 10, what, detail: String(detail) });
       if (timeline.length > 120) timeline.shift();
     };
     const update = playinfo => {
@@ -453,8 +454,7 @@
       if (owner.disposed) return;
       owner.destroy();
       lastError = `原生播放器接口发生变化，已停止加速：${error?.message || error}`;
-      note("native quality guard unavailable", lastError);
-      options.onLog?.("已交回 B 站原生播放", lastError, "error", "playback");
+      note("native quality guard unavailable", `acceleration stopped: ${error?.message || error}`);
       options.onState?.({ playerState: "native-fallback", lastError });
     }
     function sampleQuality() {
@@ -493,8 +493,9 @@
       if (owner.disposed) return;
       const playing = tracks.find(track => track.kind === "video" && Number(track.representation.id) === Number(qualityState.split("/")[0]))?.representation;
       options.onState?.({ playerState: video.error ? "error" : video.ended ? "ended" : video.readyState >= 3 ? "ready" : "buffering",
-        lastError: video.error ? video.error.message || `媒体错误 ${video.error.code}` : lastError,
-        mode: settings().mode, quality: playing ? root.__BILI_NATIVE_MSE_PLAYER_FACTORY__?.qualityLabel?.(playing) || String(playing.id) : "原生画质",
+        lastError: video.error ? video.error.message || `media error ${video.error.code}` : lastError,
+        // "native" when Bilibili's player has not said which it plays.
+        mode: settings().mode, quality: playing ? root.__BILI_NATIVE_MSE_PLAYER_FACTORY__?.qualityLabel?.(playing) || String(playing.id) : "native",
         bufferedAhead: bufferedAhead(), cdnHosts: [...cache.values()].flatMap(resolver => resolver.status()) });
     };
     function bufferedAhead() {
@@ -531,7 +532,6 @@
         failures++;
         lastError = String(error?.message || error);
         note("native range failed", lastError);
-        options.onLog?.("媒体分段下载失败", lastError, "error", "download");
         publish();
         // Reject the original loader request; Bilibili owns playback recovery.
       },
@@ -550,7 +550,6 @@
     const events = new AbortController();
     for (const name of ["playing", "waiting", "stalled", "seeking", "seeked", "ended", "loadedmetadata", "error", "progress", "timeupdate"]) video.addEventListener(name, () => {
       if (name !== "timeupdate" && name !== "progress") note(`media ${name}`, `buffer ${bufferedAhead().toFixed(2)}s`);
-      if (name === "error") options.onLog?.("B 站播放器出错了", video.error?.message || `媒体错误 ${video.error?.code}`, "error", "playback");
       if (name === "playing") lastError = "";
       if (name === "timeupdate") {
         sampleQuality();

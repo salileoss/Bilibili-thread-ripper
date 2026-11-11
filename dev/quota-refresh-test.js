@@ -190,7 +190,7 @@
     audio: [representation(30280, "audio/mp4", "mp4a.40.2", 128000, deadline)]
   } } });
 
-  function startPlayer(startAt, setup, errors, logs = [], resume = false, settings = {}) {
+  function startPlayer(startAt, setup, errors, resume = false, settings = {}) {
     clock = startAt;
     playCalls = 0;
     removals = [];
@@ -206,10 +206,11 @@
       getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 8, ...settings }),
       nativeFetch: () => Promise.reject(new Error("no network in this test")),
       onState() {},
-      onLog(title) { logs.push(title); },
       onFatal(error) { errors.push(String(error?.message || error)); }
     });
   }
+  // What the player noted in its timeline, in order.
+  const notes = (player) => player.getDebug().timeline.map((item) => item.what);
   const videoBuffer = () => buffers.find((buffer) => buffer.kind === "video");
   const consecutive = (list) => list.every((value, index) => index === 0 || value === list[index - 1] + 1);
 
@@ -299,11 +300,10 @@
   // stalls. A recovery that kept waiting for ten seconds would never end.
   async function recoveryUnderALoweredLimit() {
     const errors = [];
-    const logs = [];
     // A slow first segment: the player then asks for the longest buffer, ten seconds, before
     // it resumes after a stall.
     downloadDelayMs = 2100;
-    const player = startPlayer(0, { video: { ranges: [[0, 8.5]], capacitySeconds: 11, evictsPlayed: true } }, errors, logs);
+    const player = startPlayer(0, { video: { ranges: [[0, 8.5]], capacitySeconds: 11, evictsPlayed: true } }, errors);
     await until(() => videoBuffer()?.appended.length >= 1, 8000);
     downloadDelayMs = 20;
     await until(() => quotaThrows >= 2, 8000);
@@ -313,9 +313,10 @@
     // can still reach (six seconds), not ten.
     clock = 5.3;
     video.dispatchEvent(new Event("waiting"));
-    const recovered = await until(() => logs.includes("缓冲补好了，可以继续播放"), 4000);
+    const recovered = await until(() => notes(player).includes("rebuffer done"), 4000);
+    const noted = notes(player).slice(-4);
     player.destroy({ resumeNative: false });
-    return { errors, limit, recovered, logs: logs.slice(-4), pass: !errors.length && limit === 8 && recovered };
+    return { errors, limit, recovered, notes: noted, pass: !errors.length && limit === 8 && recovered };
   }
 
   // The other order: playback has stalled and waits for ten seconds of buffer, then the buffer
@@ -323,16 +324,16 @@
   // failure at once instead of a video that waits for ever.
   async function aStallThatMeetsAFullBufferFails() {
     const errors = [];
-    const logs = [];
     downloadDelayMs = 2100;
-    const player = startPlayer(0, { video: { ranges: [[0, 6.2]], capacitySeconds: 9, evictsPlayed: true } }, errors, logs);
-    await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const player = startPlayer(0, { video: { ranges: [[0, 6.2]], capacitySeconds: 9, evictsPlayed: true } }, errors);
+    await until(() => notes(player).includes("ready to play"), 8000);
     downloadDelayMs = 400;
     video.dispatchEvent(new Event("waiting"));
     const failed = await until(() => errors.length > 0, 6000);
+    const noted = notes(player).slice(-3);
     player.destroy({ resumeNative: false });
     downloadDelayMs = 20;
-    return { errors, failed, logs: logs.slice(-3), pass: failed && errors.length === 1 };
+    return { errors, failed, notes: noted, pass: failed && errors.length === 1 };
   }
 
   // A device that decodes the stream too slowly (#58): the element waits although both tracks
@@ -341,33 +342,32 @@
   // element is left alone.
   async function decoderStallWithDataAhead() {
     const errors = [];
-    const logs = [];
-    const player = startPlayer(2, {}, errors, logs);
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const player = startPlayer(2, {}, errors);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
     await sleep(100);
     const playsBefore = playCalls;
-    const logsBefore = logs.length;
+    const notesBefore = notes(player).length;
     for (let round = 0; round < 5; round += 1) video.dispatchEvent(new Event("waiting"));
     await sleep(400);
-    const after = logs.slice(logsBefore);
+    const after = notes(player).slice(notesBefore);
     player.destroy({ resumeNative: false });
     return {
       errors, started, playsBefore, playCalls, after,
-      pass: !errors.length && started && playCalls === playsBefore && !after.includes("缓冲补好了，可以继续播放")
+      pass: !errors.length && started && playCalls === playsBefore && !after.includes("rebuffer done")
     };
   }
 
   // While the player waits for the data of a video the viewer means to play, the element is
   // paused, and Bilibili's play button, which reads video.paused, showed ▶ until the wait was
-  // over. To the page it reads as playing. A pause() from the page during the wait is the
-  // viewer's: the page hears of it and the video does not start. Destroyed, the player leaves
-  // the element as it found it.
+  // over. To the page it reads as playing. A pause() from the page during the wait, right after
+  // a click, is the viewer's: the page hears of it and the video does not start. One nobody
+  // clicked for is Bilibili's core (its reset before it puts its own source in place, #65) or
+  // another script, and changes nothing. Destroyed, the player leaves the element as it found it.
   async function reportsTheViewersIntentWhileLoading() {
     const errors = [];
-    const logs = [];
     downloadDelayMs = 300;
     const play = video.play;
-    const player = startPlayer(2, {}, errors, logs, true);
+    const player = startPlayer(2, {}, errors, true);
     await sleep(60);
     const readsPlaying = video.paused === false;
     const reallyPaused = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "paused").get.call(video);
@@ -375,19 +375,23 @@
     const count = () => { pauseEvents += 1; };
     video.addEventListener("pause", count);
     video.pause();
+    const unclickedPauseIgnored = pauseEvents === 0 && video.paused === false && player.getDebug().resumeWanted === true;
+    activated = true;
+    video.pause();
+    activated = false;
     video.removeEventListener("pause", count);
     const readsPausedAfter = video.paused === true;
     // Bilibili's core starting the element by itself later does not undo that pause (#61).
     const coreAutoplayHeldBack = await video.play().then(() => false, (error) => error?.name === "AbortError");
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
     await sleep(200);
     const playsAfter = playCalls;
     player.destroy({ resumeNative: false });
     const released = !Object.prototype.hasOwnProperty.call(video, "paused") && !Object.prototype.hasOwnProperty.call(video, "pause") && video.play === play;
     downloadDelayMs = 20;
     return {
-      errors, readsPlaying, reallyPaused, pauseEvents, readsPausedAfter, coreAutoplayHeldBack, started, playsAfter, released,
-      pass: !errors.length && readsPlaying && reallyPaused && pauseEvents === 1 && readsPausedAfter && coreAutoplayHeldBack && started && playsAfter === 0 && released
+      errors, readsPlaying, reallyPaused, unclickedPauseIgnored, pauseEvents, readsPausedAfter, coreAutoplayHeldBack, started, playsAfter, released,
+      pass: !errors.length && readsPlaying && reallyPaused && unclickedPauseIgnored && pauseEvents === 1 && readsPausedAfter && coreAutoplayHeldBack && started && playsAfter === 0 && released
     };
   }
 
@@ -396,15 +400,14 @@
   // values from the start of the session back when playback was activated.
   async function speedSetWhileLoadingIsKept() {
     const errors = [];
-    const logs = [];
     downloadDelayMs = 300;
     video.playbackRate = 1;
     video.volume = 1;
-    const player = startPlayer(2, {}, errors, logs, true);
+    const player = startPlayer(2, {}, errors, true);
     await sleep(60);
     video.playbackRate = 1.5;
     video.volume = 0.3;
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
     await sleep(100);
     const rate = video.playbackRate, volume = video.volume;
     player.destroy({ resumeNative: false });
@@ -420,17 +423,16 @@
   // once the data is in, the video starts by itself.
   async function longWaitReadsAsPaused() {
     const errors = [];
-    const logs = [];
     let pauseEvents = 0;
     const count = () => { pauseEvents += 1; };
     downloadDelayMs = 2400;
     video.addEventListener("pause", count);
-    const player = startPlayer(2, {}, errors, logs, true);
+    const player = startPlayer(2, {}, errors, true);
     await sleep(300);
     const early = { playing: video.paused === false, pauseEvents };
     await sleep(1500);
     const later = { paused: video.paused === true, pauseEvents, wanted: player.wantsToPlay() };
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
     await sleep(100);
     const plays = playCalls;
     video.removeEventListener("pause", count);
@@ -447,15 +449,14 @@
   // player no longer means to start it on its own.
   async function refusedAutoplayReadsAsPaused() {
     const errors = [];
-    const logs = [];
     let pauseEvents = 0;
     const count = () => { pauseEvents += 1; };
     const play = video.play;
     video.play = () => { playCalls += 1; return Promise.reject(new DOMException("autoplay blocked", "NotAllowedError")); };
     video.addEventListener("pause", count);
-    const player = startPlayer(2, {}, errors, logs, true);
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
-    const told = await until(() => logs.includes("浏览器没有让视频自动播放"), 2000);
+    const player = startPlayer(2, {}, errors, true);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
+    const told = await until(() => notes(player).includes("autoplay refused"), 2000);
     const state = { paused: video.paused === true, pauseEvents, resumeWanted: player.getDebug().resumeWanted };
     video.removeEventListener("pause", count);
     video.play = play;
@@ -512,12 +513,11 @@
   // script) are not the viewer's.
   async function pauseDuringStartIsKept() {
     const errors = [];
-    const logs = [];
     const element = liveElement();
     downloadDelayMs = 700;
     element.paused = false;
     activated = true;
-    const player = startPlayer(2, {}, errors, logs, true);
+    const player = startPlayer(2, {}, errors, true);
     await sleep(60);
     activated = false;
     const ownPauseNotTheViewers = player.getDebug().resumeWanted === true;
@@ -549,7 +549,7 @@
     await sleep(40);
     const coreAutoplayHeldBack = element.paused && answered === "AbortError" && unclicked === "AbortError";
     const playsBefore = playCalls;
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
     await sleep(200);
     const stayedPaused = playCalls === playsBefore && element.paused && video.paused === true;
     player.destroy({ resumeNative: false });
@@ -568,12 +568,11 @@
     const runs = {};
     const errors = [];
     for (const keepsEvents of [false, true]) {
-      const logs = [];
       const element = liveElement(keepsEvents);
       downloadDelayMs = 700;
       element.paused = false;
       activated = true;
-      const player = startPlayer(2, {}, errors, logs, true);
+      const player = startPlayer(2, {}, errors, true);
       await sleep(60);
       activated = false;
       const takeoverNotTheViewers = player.getDebug().resumeWanted === true;
@@ -596,10 +595,9 @@
   // was ready. The video starts once its buffer is.
   async function playDuringStartAfterPauseStarts() {
     const errors = [];
-    const logs = [];
     const element = liveElement();
     downloadDelayMs = 700;
-    const player = startPlayer(2, {}, errors, logs, true);
+    const player = startPlayer(2, {}, errors, true);
     await sleep(60);
     pagePlay();
     await sleep(40);
@@ -611,7 +609,7 @@
     await sleep(40);
     activated = false;
     const wantedAgain = player.getDebug().resumeWanted === true;
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
     await sleep(200);
     const playing = !element.paused;
     player.destroy({ resumeNative: false });
@@ -623,10 +621,9 @@
   // A quality switch while the start loads starts it again: the viewer's pause still stands.
   async function pauseDuringStartSurvivesQualitySwitch() {
     const errors = [];
-    const logs = [];
     const element = liveElement();
     downloadDelayMs = 700;
-    const player = startPlayer(2, {}, errors, logs, true);
+    const player = startPlayer(2, {}, errors, true);
     await player.updatePlayinfo({ data: { dash: {
       duration: SEGMENT_COUNT * SEGMENT_SECONDS,
       video: [representation(80, "video/mp4", "avc1.640028", 2000000, 1000), { ...representation(64, "video/mp4", "avc1.640028", 1000000, 1000), height: 720 }],
@@ -643,7 +640,7 @@
     await player.setQuality(64);
     const restarted = await until(() => player.getDebug().sessionStarts > sessions, 3000);
     const answered = await video.play().then(() => "played", (error) => error.name);
-    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const started = await until(() => notes(player).includes("ready to play"), 8000);
     await sleep(200);
     const stayedPaused = element.paused && player.getDebug().resumeWanted === false;
     player.destroy({ resumeNative: false });
@@ -657,10 +654,9 @@
   // video plays.
   async function pageStartsAStartNobodyPaused() {
     const errors = [];
-    const logs = [];
     const element = liveElement();
     downloadDelayMs = 700;
-    const player = startPlayer(2, {}, errors, logs, false);
+    const player = startPlayer(2, {}, errors, false);
     await sleep(60);
     const volume = video.volume;
     const answered = await new Promise((resolve) => {
@@ -712,7 +708,7 @@
   async function backwardSeekKeptToTheEnd() {
     const errors = [];
     endOfStreamCalls = 0;
-    const player = startPlayer(50, {}, errors, [], false, { secondaryBuffer: true, bufferAheadSeconds: 90 });
+    const player = startPlayer(50, {}, errors, false, { secondaryBuffer: true, bufferAheadSeconds: 90 });
     const filled = await until(() => endOfStreamCalls === 1, 6000);
     await sleep(100);
     const from = downloadedUrls.length;
@@ -796,7 +792,6 @@
   // seek that matches no saved position is left alone.
   async function nativeRestoreAfterSeek() {
     const errors = [];
-    const logs = [];
     const twoQualities = { data: { dash: {
       duration: SEGMENT_COUNT * SEGMENT_SECONDS,
       video: [representation(80, "video/mp4", "avc1.640028", 2000000, 1000), { ...representation(64, "video/mp4", "avc1.640028", 1000000, 1000), height: 720 }],
@@ -804,11 +799,11 @@
     } } };
     video.setAttribute("src", `${location.origin}/native-source`);
     // A first takeover that hands the video back at 30 s: Bilibili's core saves that position.
-    const first = startPlayer(30, {}, errors, logs);
+    const first = startPlayer(30, {}, errors);
     await until(() => downloadedUrls.filter((item) => item.kind === "video").length >= 2, 6000);
     first.destroy({ resumeNative: true });
     // The retake, as page-hook does it a few seconds later.
-    const player = startPlayer(30, {}, errors, logs);
+    const player = startPlayer(30, {}, errors);
     await player.updatePlayinfo(twoQualities);
     await until(() => downloadedUrls.filter((item) => item.kind === "video").length >= 2, 6000);
     const sessions = player.getDebug().sessionStarts;
@@ -844,10 +839,11 @@
     await sleep(400);
     const thirdAt = clock;
     const finalUndone = player.getDebug().nativeRestoresUndone;
+    const restores = player.getDebug().timeline.filter((item) => item.what === "native restore undone").map((item) => item.detail);
     player.destroy({ resumeNative: false });
     video.removeAttribute("src");
     return {
-      errors, draggedAt, keptSession, restarted, heldAt, undone, sessionsAfterUndo, secondDrag, secondAt, thirdAt, finalUndone, logs: logs.filter((title) => /回跳/.test(title)),
+      errors, draggedAt, keptSession, restarted, heldAt, undone, sessionsAfterUndo, secondDrag, secondAt, thirdAt, finalUndone, restores,
       pass: !errors.length && draggedAt === 90 && keptSession && restarted && heldAt === 90 && undone === 1
         && sessionsAfterUndo === sessions + 1 && secondDrag && thirdAt === 100 && finalUndone === 1
     };

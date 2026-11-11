@@ -4,6 +4,7 @@ const { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } = re
 const { tmpdir } = require("node:os");
 const { dirname, join, resolve } = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { execFileSync } = require("node:child_process");
 const root = resolve(__dirname, "..");
 (async () => {
 const { ancestor, BRANCH, CANARY, compareVersions, FORK_CHANGELOG, git, nextVersion, prepareCandidate, reviewPaths, STABLE, validateIdentity } = await import("../scripts/upstream-sync.mjs");
@@ -217,6 +218,18 @@ test("CI completion rejects unrelated runs, skipped media and incomplete regress
   assert.throws(() => verifyTestRun(run, 17, passedJobs().filter(job => !job.name.includes("regression-smoke"))), /required candidate job/);
   const skipped = passedJobs(); skipped.find(job => job.name.startsWith("真实视频")).conclusion = "skipped";
   assert.throws(() => verifyTestRun(run, 17, skipped), /required candidate job/);
+});
+
+test("CI completion requires the browser groups actually dispatched by Tests", () => {
+  const { browser } = JSON.parse(execFileSync(process.execPath, [join(root, "dev/run-tests.js"), "--list"], { encoding: "utf8" }));
+  const run = runFor("a".repeat(40));
+  const jobs = ["准备", "汇总", "离线 · 单元测试", ...browser.map(name => `离线 · ${name}`), "真实视频 · BV1T1NZ6xEZZ", "真实视频 · BV1GJ411x7h7"]
+    .map(name => ({ name, status: "completed", conclusion: "success" }));
+  assert.equal(verifyTestRun(run, 17, jobs), run.head_sha);
+  for (const name of browser) {
+    const incomplete = jobs.map(job => job.name === `离线 · ${name}` ? { ...job, conclusion: "skipped" } : job);
+    assert.throws(() => verifyTestRun(run, 17, incomplete), /required candidate job/);
+  }
 });
 test("a token merge pins the candidate SHA and explicitly publishes the returned merge SHA", () => {
   const sha = "a".repeat(40), mergedSha = "b".repeat(40), calls = [];

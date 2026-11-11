@@ -88,7 +88,7 @@ export function autoMergeAllowed({ enabled, paths, protection, repository }) {
   return enabled === "true" && paths.length === 0 && repository.allow_auto_merge === true && repository.allow_merge_commit === true
     && protection.required_status_checks?.strict === true && protection.required_status_checks.contexts?.includes("汇总") && protection.enforce_admins?.enabled === true;
 }
-export const REQUIRED_CANDIDATE_JOBS = ["准备", "汇总", "离线 · 单元测试", "离线 · notification-smoke-test", "离线 · notification-error-test", "离线 · userscript-test", "离线 · regression-smoke-test", "真实视频 · BV1T1NZ6xEZZ", "真实视频 · BV1GJ411x7h7"];
+export const REQUIRED_CANDIDATE_JOBS = ["准备", "汇总", "离线 · 单元测试", "离线 · media-record-test", "离线 · userscript-test", "离线 · regression-smoke-test", "离线 · international-site-test", "真实视频 · BV1T1NZ6xEZZ", "真实视频 · BV1GJ411x7h7"];
 export function verifyTestRun(run, workflowId, jobs) {
   if (run.event !== "workflow_dispatch" || run.path !== ".github/workflows/tests.yml" || run.workflow_id !== workflowId
     || run.head_branch !== BRANCH || run.repository?.full_name !== FORK || run.head_repository?.full_name !== FORK || !SHA.test(run.head_sha)) throw new Error("Not a trusted candidate CI run");
