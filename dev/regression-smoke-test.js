@@ -17,7 +17,9 @@ const { chromium } = require("playwright");
     ["takeover-error-test.html", "takeover-error-result"],
     ["floating-button-test.html", "result"],
     ["mse-abort-test.html", "mse-abort-result"],
-    ["quality-sync-test.html", "quality-sync-result"],
+    // Its 自动 steps wait for several sync ticks.
+    ["quality-sync-test.html", "quality-sync-result", 30000],
+    ["quality-sync-test.html?auto", "quality-sync-result"],
     ["info-panel-test.html", "info-panel-result"],
     ["fast-takeover-test.html", "fast-takeover-result"],
     ["buffer-window-test.html", "buffer-window-result"],
@@ -31,6 +33,7 @@ const { chromium } = require("playwright");
     ["secondary-buffer-test.html?case=off", "secondary-buffer-result"],
     ["secondary-buffer-test.html?case=limit", "secondary-buffer-result"],
     ["retake-position-test.html", "retake-position-result", 40000],
+    ["source-switch-test.html", "source-switch-result", 30000],
     ["codec-choice-test.html", "codec-choice-result"],
     ["takeover-mode-test.html", "takeover-mode-result"],
     ["compat-switch-test.html", "compat-switch-result"],

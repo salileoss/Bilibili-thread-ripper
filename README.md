@@ -48,7 +48,18 @@ The following is the upstream project's documentation; its original installation
 > 如果 BTR 帮到了你，欢迎分享给同样在海外看 B 站的朋友，也可以给项目点个 Star ⭐，让更多人看到它。
 
 > [!TIP]
-> 想在手机或平板上用？可以试试把 BTR 移植进 PiliPlus 客户端的第三方项目：[nishuodedui1145-del/PiliPlus](https://github.com/nishuodedui1145-del/PiliPlus)、[lemonteaau/PiliPlus](https://github.com/lemonteaau/PiliPlus)。它们由社区独立维护，效果不做保证。
+> 想在全平台使用？试试这些项目：
+>
+> | 名字 | 适用平台 | 作者 | 链接 |
+> | --- | --- | --- | --- |
+> | Bilibili-thread-ripper-desktop | Windows 哔哩哔哩客户端 | LouieTang | [GitHub](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) |
+> | Bilibili-thread-ripper-mac | macOS 哔哩哔哩客户端 | Katsurama | [GitHub](https://github.com/Katsurama/Bilibili-thread-ripper-mac) |
+> | BiliFast | iOS | KaiC5504 | [GitHub](https://github.com/KaiC5504/BiliFast) |
+> | MyTVB-Speed-Boost | Android TV | nitansde | [GitHub](https://github.com/nitansde/MyTVB-Speed-Boost) |
+> | PiliPlus 海外加速版 | Android、iOS、Windows、macOS、Linux | lemonteaau | [GitHub](https://github.com/lemonteaau/PiliPlus) |
+> | PiliPlus-BTR | Android、iOS | nishuodedui1145-del | [GitHub](https://github.com/nishuodedui1145-del/PiliPlus) |
+>
+> 它们由社区独立维护，效果不做保证。
 
 ## 为什么需要它
 
@@ -292,7 +303,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 - [ ] 所在国家或地区，以及网络运营商
 - [ ] 视频 BV 号、清晰度和编码
 - [ ] CDN 模式与线程数
-- [ ] 右键“视频统计信息”里的数据，打开 Debug 后的日志或错误提示；也可以在浏览器控制台运行 `copy(__biliThreadRipperDebug.report())`，把复制下来的诊断信息贴上来
+- [ ] 右键“视频统计信息”里的数据，以及 BTR 设置里 **高级设置 → 功能 → 调试 → 复制诊断信息** 复制下来的内容
 - [ ] 是首次加载慢、连续播放卡，还是大幅拖动后卡
 
 > [!CAUTION]
@@ -349,7 +360,7 @@ pics/、docs/      README 里的图片，以及贡献者头像（pics/contributo
 - **Canary**：`node scripts/canary.mjs` 生成 `canary/` 里的文件，平时由 Actions 运行，本地一般不用。
 - **贡献者**：`node scripts/contributors.mjs` 按 GitHub 的贡献者列表重新画 `pics/contributors.svg`（“参与贡献”里的头像），有新贡献者时手动跑一下再提交。GitHub 的列表有几个小时的缓存。
 
-源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices、settings-panel 这 6 个文件桌面版也在用，改了要同步过去。
+源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、runtime-notices、diagnostic-report、settings-panel 这 6 个文件桌面版也在用，改了要同步过去；diagnostic-report 要在 settings-panel 之前加载。
 
 </details>
 

@@ -17,8 +17,7 @@
   root.__playinfo__ = { data: { dash: { duration: 320, video: [], audio: [] } } };
   root.__BILI_RANGE_CORE__ = {
     normalizeSettings(value) {
-      return { enabled: value?.enabled !== false, debugNotices: value?.debugNotices === true,
-        takeover: "full", mode: "mainland", customHosts: [], concurrency: 8 };
+      return { enabled: value?.enabled !== false, takeover: "full", mode: "mainland", customHosts: [], concurrency: 8 };
     }
   };
   root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = {
@@ -26,7 +25,7 @@
   };
   root.fetch = async input => { throw new Error(`unexpected request: ${input}`); };
   const settings = payload => root.postMessage({ channel: CHANNEL, type: "settings",
-    payload: { enabled: true, debugNotices: false, ...payload } }, "*");
+    payload: { enabled: true, ...payload } }, "*");
   document.addEventListener("DOMContentLoaded", () => settings({}), { once: true });
   const waitFor = async test => {
     const deadline = performance.now() + 5000;
@@ -37,15 +36,15 @@
 
   (async () => {
     await waitFor(() => root.__biliThreadRipperDebug?.getPlayer());
-    const checks = { noWatchWithoutDebug: callbacks.size === 0 && report().playback.lastPresentedFrame === null };
-    settings({ debugNotices: true });
+    // The frame is watched for the diagnostic copy whenever BTR plays.
     await waitFor(() => callbacks.size === 1);
-    // Callback IDs may be zero; disabling Debug must still cancel the first callback.
-    settings({ debugNotices: false });
+    const checks = { watchesFrame: report().playback.lastPresentedFrame === null };
+    // Callback IDs may be zero; switching BTR off must still cancel the first callback.
+    settings({ enabled: false });
     await waitFor(() => callbacks.size === 0);
     checks.cancelsZeroId = !callbacks.has(0);
-    settings({ debugNotices: true });
-    await waitFor(() => callbacks.size === 1);
+    settings({ enabled: true });
+    await waitFor(() => root.__biliThreadRipperDebug.getPlayer() && callbacks.size === 1);
     const [id, present] = callbacks.entries().next().value;
     callbacks.delete(id);
     present(performance.now(), { mediaTime: 175, expectedDisplayTime: performance.now(), presentedFrames: 100 });
@@ -60,11 +59,17 @@
     checks.oneOutstandingCallback = callbacks.size === 1;
     video.getVideoPlaybackQuality = undefined;
     checks.noQualityApi = report().playback.frames === null;
-    settings({ debugNotices: false });
+    settings({ enabled: false });
     await waitFor(() => callbacks.size === 0);
     checks.releasesWatch = report().playback.lastPresentedFrame === null;
+    settings({ enabled: true });
+    await waitFor(() => root.__biliThreadRipperDebug.getPlayer() && callbacks.size === 1);
+    // An element without the frame callback API is not watched.
+    settings({ enabled: false });
+    await waitFor(() => callbacks.size === 0);
     video.requestVideoFrameCallback = undefined;
-    settings({ debugNotices: true });
+    settings({ enabled: true });
+    await waitFor(() => root.__biliThreadRipperDebug.getPlayer());
     await new Promise(resolve => setTimeout(resolve, 100));
     checks.noFrameApi = report().playback.lastPresentedFrame === null && callbacks.size === 0;
     settings({ enabled: false });
