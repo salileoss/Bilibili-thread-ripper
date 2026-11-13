@@ -8,6 +8,15 @@ Fork releases are recorded here. Original project release notes remain in [CHANG
 - Keep upstream and fork release histories separate so upstream release notes merge without recurring fork insertions.
 - Explicitly run candidate CI and publication when using the built-in GitHub token for guarded auto-merging.
 
+## [2026.11.13.1] - 2026-11-13
+
+### BTR West Coast upstream update
+
+- Integrate [upstream 2026.11.13.1](https://github.com/MrTangLuyao/Bilibili-thread-ripper/releases/tag/2026.11.13.1) (c3451e4710a6d3e0ee868cd4f456a78639635593).
+- Adapt automatic quality to measured download speed and upcoming video bitrate, retain the manual quality when returning to Auto, and accelerate compatible playback addresses supplied by other scripts.
+- Preserve West Coast Auto CDN routing, playback-rate-aware demand estimates, conservative buffering defaults, optional progressive appending, saved settings and fork update URLs.
+- Resolve the playback demand-estimator conflict and regenerate both userscripts from the merged source.
+
 ## [2026.11.10.1] - 2026-11-10
 
 ### BTR West Coast upstream update

@@ -271,6 +271,17 @@
     catch (_error) { return fallback; }
   }
 
+  function kbpsAhead(track, from, seconds = 30) {
+    let bytes = 0, duration = 0;
+    for (const segment of track?.sidx?.segments || []) {
+      if (segment.endTime <= from) continue;
+      if (segment.startTime >= from + seconds) break;
+      bytes += Number(segment.length) || 0;
+      duration += Number(segment.durationSeconds) || 0;
+    }
+    return duration > 0 ? Math.round(bytes * 8 / duration / 1000) : 0;
+  }
+
   function mediaBytesPerSecond(track, time = null) {
     const segments = track?.sidx?.segments || [];
     const index = time === null ? track.startupIndex : sidxTools.segmentIndexAt(segments, time);
@@ -1689,11 +1700,12 @@
       catch (_error) { return false; }
     }
 
-    async function updatePlayinfo(playinfo, leavingHandPick = false) {
+    async function updatePlayinfo(playinfo) {
       if (destroyed) return;
-      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays, unless
-      // it is a quality picked by hand that the viewer just left for 自动.
-      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality || leavingHandPick ? 0 : Number(selectedVideo?.id) || 0);
+      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays. So does
+      // a quality picked by hand that the viewer just left for 自动: the menu goes on showing
+      // it there, and the playinfo's own quality is often a lower one (#69).
+      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality ? 0 : Number(selectedVideo?.id) || 0);
       // Bilibili's page and the timed refresh both bring playinfos, and the one that arrives
       // last is not always the newer one. An older one is dropped whole: kept as the current
       // playinfo it would hand its addresses to the next session, after a seek or a quality
@@ -1718,9 +1730,8 @@
     async function setQuality(quality) {
       const wanted = Math.max(0, Math.trunc(Number(quality)) || 0);
       if (destroyed || wanted === preferredQuality) return;
-      const leavingHandPick = !wanted && preferredQuality > 0;
       preferredQuality = wanted;
-      await updatePlayinfo(currentPlayinfo, leavingHandPick);
+      await updatePlayinfo(currentPlayinfo);
     }
 
     // In 自动 the native player may settle on another quality (see selectRepresentations).
@@ -1833,6 +1844,9 @@
       updatePlayinfo,
       urlDeadlineSeconds,
       ownsMediaUrl,
+      // The qualities this browser plays, each in the codec that would be used, with its
+      // bitrate: what the page chooses among for 自动 (driveAutoQuality in page-hook.js).
+      playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
         transfer: downloader.getDiagnostics?.() || null,
@@ -1861,6 +1875,10 @@
         videoType: mimeFor(selectedVideo, "video"),
         audioType: mimeFor(selection.audio, "audio"),
         videoBandwidth: Number(selectedVideo?.bandwidth) || 0,
+        // The bitrate of the next half minute of the video being played, in kbit/s, from its
+        // index. The bandwidth above is an average over the whole video: a busy stretch was
+        // measured at nearly three times as much, and 自动 chooses by what is coming.
+        videoKbpsAhead: kbpsAhead(session?.tracks?.find((track) => track.kind === "video"), Number(video.currentTime) || session?.startTime || 0),
         audioBandwidth: Number(selection.audio?.bandwidth) || 0,
         currentTime: Number(video.currentTime) || 0,
         mediaSourceState: session?.mediaSource?.readyState || "closed",
