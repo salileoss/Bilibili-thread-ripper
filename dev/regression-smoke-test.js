@@ -20,6 +20,11 @@ const { chromium } = require("playwright");
     // Its 自动 steps wait for several sync ticks.
     ["quality-sync-test.html", "quality-sync-result", 30000],
     ["quality-sync-test.html?auto", "quality-sync-result"],
+    // 自动 in the full takeover: waits out the ten seconds between two picks.
+    ["auto-quality-test.html", "auto-quality-result", 30000],
+    ["auto-quality-test.html?kept=5000", "auto-quality-result", 60000],
+    ["auto-quality-test.html?kept=50000", "auto-quality-result", 60000],
+    ["auto-quality-test.html?kept=3500", "auto-quality-result", 30000],
     ["info-panel-test.html", "info-panel-result"],
     ["fast-takeover-test.html", "fast-takeover-result"],
     ["buffer-window-test.html", "buffer-window-result"],
@@ -37,6 +42,7 @@ const { chromium } = require("playwright");
     ["codec-choice-test.html", "codec-choice-result"],
     ["takeover-mode-test.html", "takeover-mode-result"],
     ["compat-switch-test.html", "compat-switch-result"],
+    ["compat-outside-test.html", "compat-outside-result", 30000],
     ["playback-diagnostics-test.html", "playback-diagnostics-result"],
     ["native-core-lock-test.html", "native-core-lock-result", 30000],
     // Several scenarios that wait for buffer checks and rebuffering, hence the longer limit.
