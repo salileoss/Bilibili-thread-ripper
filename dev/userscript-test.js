@@ -111,6 +111,19 @@ async function showTab(panel, name) {
   await panel.locator(`[role="tab"][data-tab="${name}"]`).click();
   await settle(panel);
 }
+// The bubble of a question mark: whether it shows, whether it opened under the mark, and
+// whether all of it is inside the panel (which it must not widen either).
+function bubble(help) {
+  return help.evaluate((node) => {
+    const style = getComputedStyle(node, "::after");
+    if (style.display === "none") return { shown: false };
+    const popup = node.closest(".btr-popup"), frame = popup.getBoundingClientRect(), box = node.getBoundingClientRect();
+    const left = box.left + parseFloat(style.left), top = box.top + parseFloat(style.top);
+    return { shown: true, low: node.classList.contains("is-low"),
+      inside: popup.scrollWidth <= popup.clientWidth && left >= frame.left && left + parseFloat(style.width) <= frame.left + popup.clientWidth
+        && top >= frame.top && top + parseFloat(style.height) <= frame.top + popup.clientHeight };
+  });
+}
 async function showMain(panel) {
   if (await panel.locator("#advanced").evaluate(node => node.open)) await panel.locator("#advanced-back").click();
   await settle(panel);
@@ -224,10 +237,10 @@ async function showMain(panel) {
     // The version sits under the title in small print.
     assert.equal(await panel.locator(".name .version").textContent(), `v${version}`);
     assert.equal(await panel.locator("#enabled").isChecked(), true);
-    // 剧集加速 and 直播加速 sit in a block of their own, 剧集加速 with a line of explanation:
-    // episodes are sped up by default, live rooms only once switched on.
-    assert.deepEqual(await panel.locator(".accel-controls input").evaluateAll(nodes => nodes.map(node => [node.id, node.checked])), [["episode-enabled", true], ["live-enabled", false]]);
-    assert.deepEqual(await panel.locator(".accel-controls .accel-row small").evaluateAll(nodes => nodes.map(node => node.closest("label").htmlFor)), ["episode-enabled"]);
+    // 音频加速, 剧集加速 and 直播加速 sit in a block of their own, the first two with a line of
+    // explanation: audio and episodes are sped up by default, live rooms only once switched on.
+    assert.deepEqual(await panel.locator(".accel-controls input").evaluateAll(nodes => nodes.map(node => [node.id, node.checked])), [["audio-acceleration", true], ["episode-enabled", true], ["live-enabled", false]]);
+    assert.deepEqual(await panel.locator(".accel-controls .row-help").evaluateAll(nodes => nodes.map(node => node.closest(".row").querySelector("input").id)), ["audio-acceleration", "episode-enabled"]);
     assert.equal(await panel.locator(".notice-controls #live-enabled").count(), 0);
     // The panel shows the script's own icon.
     assert.equal(await panel.locator("img.logo").getAttribute("src"), `data:image/png;base64,${fs.readFileSync(path.join(root, "icons/icon-128.png")).toString("base64")}`);
@@ -260,7 +273,7 @@ async function showMain(panel) {
     await panel.locator('input[name="takeover"][value="full"]').check({ force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().takeover === "full");
     assert.equal(await panel.locator("#thread-value").textContent(), "自动");
-    assert.match(await panel.locator('label[for="auto-concurrency"]').textContent(), /^自动线程数（推荐）/);
+    assert.equal(await panel.locator(".row", { has: page.locator("#auto-concurrency") }).locator(".row-name").textContent(), "自动线程数");
     // Nothing shows on the page any more: Debug 模式, 显示错误 and the message filters are gone.
     assert.equal(await panel.locator("#debug-notices, #error-notices, #debug-filters, [data-debug-category]").count(), 0);
     await page.waitForFunction(() => __userscriptTest.statusRequests > 0);
@@ -290,6 +303,79 @@ async function showMain(panel) {
     await panel.locator("#concurrency").fill("2");
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().concurrency === 16);
     assert.equal(await panel.locator("#thread-value").textContent(), "16");
+    await showTab(panel, "features");
+    // 调试 comes first on this page.
+    assert.equal(await panel.locator("#panel-features .block-title").first().textContent(), "调试");
+    // The question mark beside a name shows the setting's explanation in a bubble over it while
+    // the pointer is on it, and no longer. The bubble takes no room in the row, and the mark
+    // is a larger target than it looks. A press on it changes nothing.
+    const audioRow = panel.locator(".row", { has: page.locator("#audio-acceleration") });
+    const audioHelp = audioRow.locator(".row-help");
+    const rowHeight = (await audioRow.boundingBox()).height;
+    const helpBox = await audioHelp.boundingBox();
+    assert.ok(helpBox.width >= 30 && helpBox.height >= 30, "the question mark is a small target");
+    assert.equal(await audioHelp.getAttribute("aria-label"), "关掉后只加速视频，音频照常下载。");
+    assert.deepEqual(await bubble(audioHelp), { shown: false });
+    await audioHelp.hover();
+    assert.deepEqual(await bubble(audioHelp), { shown: true, low: false, inside: true });
+    assert.equal((await audioRow.boundingBox()).height, rowHeight, "the bubble took room in the row");
+    await audioHelp.click();
+    assert.deepEqual(await bubble(audioHelp), { shown: true, low: false, inside: true });
+    assert.equal(await panel.locator("#audio-acceleration").isChecked(), true);
+    await panel.locator(".page-title").hover();
+    assert.deepEqual(await bubble(audioHelp), { shown: false }, "the bubble stayed after the pointer left");
+    // The keyboard shows it too.
+    await panel.locator("#audio-acceleration").focus();
+    await page.keyboard.press("Shift+Tab");
+    assert.deepEqual(await bubble(audioHelp), { shown: true, low: false, inside: true });
+    await page.keyboard.press("Tab");
+    assert.deepEqual(await bubble(audioHelp), { shown: false });
+    // The name itself belongs to the switch. A row without an explanation has no question mark.
+    await audioRow.locator(".row-name").click();
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === false);
+    await audioRow.locator(".row-name").click();
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === true);
+    assert.equal(await panel.locator(".row", { has: page.locator("#live-enabled") }).locator(".row-help").count(), 0);
+    // Every bubble of every page stays inside the panel.
+    for (const name of ["network", "buffer", "interface", "features"]) {
+      await showTab(panel, name);
+      const helps = await panel.locator(`#panel-${name} .row-help`).all();
+      assert.ok(helps.length > 0);
+      for (const help of helps) {
+        await help.hover();
+        assert.deepEqual(await bubble(help), { shown: true, low: false, inside: true }, `the bubble “${await help.getAttribute("aria-label")}” is not all inside the panel`);
+      }
+    }
+    // 音频加速 and the limit of 自动 are saved, and a slider off its default says so.
+    await panel.locator("#audio-acceleration").uncheck({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === false);
+    await panel.locator("#auto-quality-max").fill("2");
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().autoQualityMax === 80);
+    assert.equal(await panel.locator("#quality-value").textContent(), "1080P");
+    assert.equal(await panel.locator(".row.is-changed #auto-quality-max").count(), 1);
+    await panel.locator("#auto-quality-max").fill("5");
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().autoQualityMax === 0);
+    assert.equal(await panel.locator("#quality-value").textContent(), "不限");
+    assert.equal(await panel.locator(".row.is-changed #auto-quality-max").count(), 0);
+    await panel.locator("#audio-acceleration").check({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === true);
+    // The fork's experimental appending switch survives the upstream settings redesign.
+    await showTab(panel, "buffer");
+    assert.equal(await panel.locator("#progressive-media").isChecked(), false);
+    await panel.locator("#progressive-media").check({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().progressiveMedia === true);
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").progressiveMedia === true);
+    const savedPage = await context.newPage();
+    await savedPage.goto(origin);
+    await savedPage.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().progressiveMedia === true);
+    await openSettings(savedPage);
+    const savedPanel = savedPage.locator(`${settingsHost} .btr-popup`);
+    await savedPanel.waitFor();
+    await showTab(savedPanel, "buffer");
+    assert.equal(await savedPanel.locator("#progressive-media").isChecked(), true);
+    await savedPage.close();
+    await panel.locator("#progressive-media").uncheck({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().progressiveMedia === false);
     await showTab(panel, "features");
     // The GitHub mark next to the title opens the project in a new tab.
     const github = panel.locator("#github-link");
@@ -330,8 +416,121 @@ async function showMain(panel) {
     assert.equal(await panel.locator("#debug-copy").textContent(), "已复制");
     assert.equal(await panel.locator("#debug-copy-status").textContent(), "");
     await page.waitForTimeout(2700);
-    assert.equal(await panel.locator("#debug-copy").textContent(), "复制诊断信息");
+    assert.equal(await panel.locator("#debug-copy").textContent(), "复制");
     console.log("PASS 设置面板：开关、线程和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息是英文的，里面有记下的错误，没有带签名的地址");
+
+    // BTR 统计信息 is a panel of its own over the player, apart from the settings.
+    // "BTR 统计信息" in the menu of a right click opens it; BTR adds the entry after every right
+    // click, once, because Bilibili's player builds that menu anew each time, and moves a
+    // menu up that the entry pushes out of the player.
+    await page.keyboard.press("Escape");
+    await page.locator(settingsHost).waitFor({ state: "detached" });
+    const statsHost = "#__bilibili_thread_ripper_stats__";
+    const entry = page.locator(".bpx-player-contextmenu [data-btr-stats]");
+    const rightClick = async () => {
+      await page.locator(".bpx-player-container video").click({ button: "right", position: { x: 700, y: 400 } });
+      await page.waitForTimeout(150);
+    };
+    await rightClick();
+    await rightClick();
+    assert.deepEqual(await page.locator(".bpx-player-contextmenu li").allTextContents(), ["快捷键说明", "视频统计信息", "BTR 统计信息"]);
+    await page.evaluate(() => { document.querySelector(".bpx-player-contextmenu").style.top = "520px"; });
+    await rightClick();
+    assert.ok(await page.evaluate(() => document.querySelector(".bpx-player-contextmenu").getBoundingClientRect().bottom <= document.querySelector(".bpx-player-container").getBoundingClientRect().bottom + .5), "the menu hangs out of the player");
+    await page.evaluate(() => { document.querySelector(".bpx-player-contextmenu").style.top = "100px"; });
+    assert.equal(await page.locator(statsHost).count(), 0);
+    // The entry answers the press. The player takes its menu away a moment after a press, so
+    // a button held a little longer is released on the video and no click ever comes.
+    await rightClick();
+    await entry.hover();
+    await page.mouse.down();
+    await page.waitForTimeout(300);
+    assert.equal(await entry.isVisible(), false, "the menu of the test page stayed");
+    await page.mouse.up();
+    assert.equal(await page.locator(`.bpx-player-container > ${statsHost}`).count(), 1, "a press held a little longer did not open the panel");
+    assert.equal(await page.locator(settingsHost).count(), 0, "the settings opened with it");
+    assert.equal(await page.locator(`${statsHost} h2`).textContent(), "BTR 统计信息");
+    // The same entry closes it, and a short click opens it once (not open and shut again).
+    await rightClick();
+    await entry.click();
+    assert.equal(await page.locator(statsHost).count(), 0);
+    await rightClick();
+    await entry.click();
+    assert.equal(await page.locator(statsHost).count(), 1);
+    // The fake player of this page does not say that it plays the video: the panel says so.
+    const list = page.locator(`${statsHost} .rows`).last();
+    assert.equal(await page.locator(`${statsHost} .rows`).first().textContent(), "这个视频现在由 B 站自己的播放器播放。");
+    assert.equal(await list.isHidden(), true);
+    // BTR plays, and downloads from two nodes: 640 KiB and 160 KiB a second. A third node is
+    // known and refused.
+    await page.evaluate(() => {
+      const container = document.querySelector(".bpx-player-container");
+      container.dataset.btrMseActive = "true";
+      const { onTransfer, onState } = __userscriptTest.calls.at(-1).options;
+      onState({ playerState: "ready", quality: "720P", bufferedAhead: 12, cdnHosts: [
+        { host: "upos-btr-video.bilivideo.com", state: "healthy" }, { host: "upos-btr-audio.bilivideo.com", state: "healthy" }, { host: "upos-btr-slow.bilivideo.com", state: "blocked" }] });
+      const video = onTransfer({ phase: "start", kind: "video", url: "https://upos-btr-video.bilivideo.com/v.m4s", totalBytes: 4 << 20 });
+      const audio = onTransfer({ phase: "start", kind: "audio", url: "https://upos-btr-audio.bilivideo.com/a.m4s", totalBytes: 1 << 20 });
+      const feed = setInterval(() => {
+        onTransfer({ phase: "progress", id: video, bytes: 64 * 1024 });
+        onTransfer({ phase: "progress", id: audio, bytes: 16 * 1024 });
+      }, 100);
+      window.__statsEnd = () => {
+        clearInterval(feed);
+        onTransfer({ phase: "done", id: video });
+        onTransfer({ phase: "done", id: audio });
+        delete container.dataset.btrMseActive;
+      };
+    });
+    await page.waitForTimeout(1300);
+    const sizeEarly = await page.locator(`${statsHost} .panel`).boundingBox();
+    await page.waitForTimeout(2100);
+    // Every row a name and one value. The row of the bitrate coming up is not there, as the
+    // fake player does not know it.
+    const shown = await list.locator(".row").evaluateAll(rows => Object.fromEntries(rows.filter(row => !row.hidden && row.querySelector(".name").textContent)
+      .map(row => [row.querySelector(".name").textContent.replace(":", ""), row.querySelector(".text").textContent])));
+    for (const name of ["下载速度", "节点"]) {
+      assert.ok(/^\d+ KB\/s$/.test(shown[name]) && parseInt(shown[name], 10) >= 400 && parseInt(shown[name], 10) <= 1100, `${name} reads ${shown[name]}`);
+      delete shown[name];
+    }
+    assert.deepEqual(shown, { 接管方式: "全接管", 画面: "1280 x 720@25 [AV1]", 平均码率: "0.4 Mbps", 分段: "5 / 80", 丢帧: "0 / 0", 卡顿: "1 次", 缓冲: "12 / 45 秒", 线程: "2 / 16" });
+    assert.equal(/，/.test(await page.locator(`${statsHost} .panel`).textContent()), false, "a value is two things joined by a comma");
+    assert.ok((await page.locator(`${statsHost} .graph polyline`).first().getAttribute("points")).split(" ").length >= 2, "no line on the graph of the speed");
+    assert.equal(await page.locator(`${statsHost} .cells i`).count(), 2);
+    // The nodes stay in the order BTR knows them in, whatever they bring.
+    const nodes = await list.locator(".node").evaluateAll(names => names.map(name => [name.textContent, Number(name.nextElementSibling.style.getPropertyValue("--at")), name.nextElementSibling.nextElementSibling.textContent]));
+    assert.deepEqual(nodes.map(([name]) => name), ["btr-video", "btr-audio", "btr-slow"]);
+    assert.ok(nodes[0][1] === 1 && nodes[1][1] > .2 && nodes[1][1] < .3 && nodes[2][2] === "已屏蔽", JSON.stringify(nodes));
+    // Nothing moved while the numbers changed.
+    assert.deepEqual(await page.locator(`${statsHost} .panel`).boundingBox(), sizeEarly, "the panel changed its size with its numbers");
+    // Bilibili's own 视频统计信息 panel is as its player wrote it.
+    assert.equal(await page.locator(".bpx-player-info-panel").textContent(), "Video Host:native-video.bilivideo.com");
+    await page.evaluate(() => window.__statsEnd());
+    // Its own button closes it.
+    await page.locator(`${statsHost} .close`).click();
+    assert.equal(await page.locator(statsHost).count(), 0);
+    // 运行状态 in the settings panel has an arrow: it opens BTR 统计信息, and the settings close.
+    await openSettings(page);
+    await panel.waitFor();
+    assert.equal(await panel.locator(".run-state svg").isVisible(), true);
+    await panel.locator(".run-state").click();
+    await page.locator(settingsHost).waitFor({ state: "detached" });
+    assert.equal(await page.locator(statsHost).count(), 1);
+    // Switched off, BTR adds nothing to the menu, and the open panel goes.
+    await openSettings(page);
+    await panel.waitFor();
+    await panel.locator("#enabled").uncheck({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().enabled === false);
+    await page.keyboard.press("Escape");
+    await page.locator(settingsHost).waitFor({ state: "detached" });
+    await page.locator(statsHost).waitFor({ state: "detached" });
+    await rightClick();
+    assert.equal(await entry.count(), 0);
+    await openSettings(page);
+    await panel.waitFor();
+    await panel.locator("#enabled").check({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().enabled === true);
+    console.log("PASS BTR 统计信息：右键菜单里有入口，按久一点也能打开；面板独立浮在播放器上，每行一个值，数字变化时不晃动；设置里的运行状态有箭头能打开它；B 站自己的统计面板不再被改动");
 
     // Closing stops the status polling; opening again starts clean.
     await page.keyboard.press("Escape");
@@ -380,9 +579,17 @@ async function showMain(panel) {
     await page.locator(`${settingsHost} .btr-popup`).waitFor();
     const shortBox = await page.locator(`${settingsHost} .btr-close`).boundingBox();
     assert.ok(shortBox.y + shortBox.height <= 480, "关闭 is below the bottom of a short window");
-    // 恢复默认设置 is at the bottom with it, on the first page as on every other.
+    // 恢复默认设置 is at the bottom beside it, of the same height, on the first page as on every other.
     const resetBox = await page.locator(`${settingsHost} #reset-settings`).boundingBox();
-    assert.ok(resetBox && resetBox.y >= 0 && resetBox.y + resetBox.height <= shortBox.y, "恢复默认设置 is not in reach above 关闭");
+    assert.ok(resetBox && Math.abs(resetBox.y - shortBox.y) < 1 && Math.abs(resetBox.height - shortBox.height) < 1 && resetBox.x + resetBox.width <= shortBox.x, "恢复默认设置 is not in reach beside 关闭");
+    // In a window this short a question mark can be at the top of the panel with no room for
+    // its bubble above: the bubble opens under the mark, still inside the panel.
+    const shortPanel = page.locator(`${settingsHost} .btr-popup`);
+    await showTab(shortPanel, "features");
+    const topHelp = shortPanel.locator(".row", { has: page.locator("#episode-enabled") }).locator(".row-help");
+    await topHelp.evaluate((node) => node.closest(".row").scrollIntoView({ block: "start" }));
+    await topHelp.hover();
+    assert.deepEqual(await bubble(topHelp), { shown: true, low: true, inside: true });
     await clickClose(page);
     await page.setViewportSize({ width: 1100, height: 900 });
     console.log("PASS 页面自己的弹层或模态框开着时设置页仍在最上层，窗口很矮时“关闭”也点得到");
