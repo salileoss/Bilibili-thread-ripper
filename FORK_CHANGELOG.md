@@ -16,6 +16,7 @@ Fork releases are recorded here. Original project release notes remain in [CHANG
 - Add an audio acceleration switch, an automatic quality ceiling and an independent BTR statistics panel with download, buffer, thread and CDN graphs.
 - Adopt the updated settings layout and help text while preserving West Coast Auto CDN routing, optional progressive appending, conservative buffering defaults, saved settings and fork update URLs.
 - Resolve source and diagnostic-test conflicts and regenerate both userscripts from the merged source.
+- Fix saving and reloading the progressive appending switch, and keep its help bubble inside the redesigned panel.
 
 ## [2026.11.13.1] - 2026-11-13
 
